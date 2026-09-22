@@ -2,9 +2,9 @@
 
 ## Status and scope
 
-This document describes the intended architecture of a model-routing extension for the Pi coding agent. The repository contains the directory skeleton, SDK-independent judgment models, the `JudgmentProvider` port and error type, and compile-time contract tests. Adapters, runtime validation, routing logic, dependency installation, and package configuration remain deferred.
+This document describes the intended architecture of a model-routing extension for the Pi coding agent. The repository contains the directory skeleton, SDK-independent judgment models, the `JudgmentProvider` port and error type, and the TypeSafe adapter with runtime validation. Minimal npm tooling, compile-time contract tests, and mocked-transport integration tests are included. Routing logic and Pi integration remain deferred. See [TypeSafe adapter](typesafe-adapter.md) for configuration and validation details.
 
-Empty directories contain `.gitkeep` placeholders. Except for the judgment models and port, the filenames below are planned responsibilities, not existing implementations or a requirement to create every module immediately.
+Empty directories contain `.gitkeep` placeholders. Except for the judgment models, port, and TypeSafe adapter, the filenames below are planned responsibilities, not existing implementations or a requirement to create every module immediately.
 
 ## Goal
 
@@ -66,8 +66,8 @@ src/
       commands.ts
       session-state.ts
     typesafe/
-      jev-judgment-provider.ts
-      client.ts
+      jev-judgment-provider.ts      # Includes client construction
+      map-judgment.ts
     config/
       load-config.ts
       config-schema.ts
@@ -101,7 +101,7 @@ docs/
   decisions/
 ```
 
-Package metadata, TypeScript/test-runner configuration, the README, and example configuration remain deferred. Compile-time contract tests live in `tests/unit/application/judgment-provider.type-test.ts`.
+Minimal package metadata and TypeScript/test tooling are implemented; the README and example router configuration remain deferred. Compile-time contract tests live in `tests/unit/application/judgment-provider.type-test.ts` and mocked SDK transport tests in `tests/integration/typesafe/jev-judgment-provider.test.ts`.
 
 ## Layer responsibilities
 
@@ -143,7 +143,7 @@ The application coordinates a routing operation without knowing how Pi, Jev, or 
 
 #### Initial port
 
-`JudgmentProvider` is owned by the application and will be implemented by the TypeSafe adapter. Its contract is:
+`JudgmentProvider` is owned by the application and implemented by the TypeSafe adapter. Its contract is:
 
 ```text
 judge({ context, questions }, cancellation options) -> { answers }
@@ -190,7 +190,7 @@ Do not infer that every model-selection event is a manual user override. Disting
 
 ### TypeSafe adapter
 
-`jev-judgment-provider.ts` will implement `JudgmentProvider`. It owns TypeSafe-specific request/response mapping, runtime validation, cancellation, and error normalization—not routing questions or model selection. `client.ts` will own credentials, model/version configuration, deadlines, bounded retries, and transport setup.
+`jev-judgment-provider.ts` implements `JudgmentProvider`. It owns client construction, configuration, cancellation, and sanitized error normalization. `map-judgment.ts` owns SDK request/response mapping and runtime validation. Neither module owns routing questions or model selection. A separate client-construction module is unnecessary at this stage.
 
 The application defines questions and maps judgments into domain assessment dimensions, initially:
 
