@@ -2,9 +2,9 @@
 
 ## Status and scope
 
-This document describes the intended architecture of a model-routing extension for the Pi coding agent. The repository currently contains a directory skeleton only: implementation, dependency installation, package configuration, and tests are intentionally deferred.
+This document describes the intended architecture of a model-routing extension for the Pi coding agent. The repository contains the directory skeleton, SDK-independent judgment models, the `JudgmentProvider` port and error type, and compile-time contract tests. Adapters, runtime validation, routing logic, dependency installation, and package configuration remain deferred.
 
-Empty directories contain `.gitkeep` placeholders. The filenames below are planned responsibilities, not existing implementations or a requirement to create every module immediately.
+Empty directories contain `.gitkeep` placeholders. Except for the judgment models and port, the filenames below are planned responsibilities, not existing implementations or a requirement to create every module immediately.
 
 ## Goal
 
@@ -48,11 +48,15 @@ src/
     filter-models.ts
     select-model.ts
   application/
+    models/
+      judgment.ts
     ports/
-      context-assessor.ts
+      judgment-provider.ts
     use-cases/
       route-request.ts
     prepare-context.ts
+    questions.ts
+    map-assessment.ts
   adapters/
     pi/
       register-hooks.ts
@@ -62,9 +66,7 @@ src/
       commands.ts
       session-state.ts
     typesafe/
-      jev-assessor.ts
-      questions.ts
-      map-assessment.ts
+      jev-judgment-provider.ts
       client.ts
     config/
       load-config.ts
@@ -82,7 +84,7 @@ tests/
   architecture/
   fixtures/
   fakes/
-    fake-context-assessor.ts
+    fake-judgment-provider.ts
 
 evals/
   cases/
@@ -99,7 +101,7 @@ docs/
   decisions/
 ```
 
-Package metadata, TypeScript/test-runner configuration, the README, example configuration, and all source/test files will be added during implementation. Only `docs/architecture.md` and directory placeholders are created at this stage.
+Package metadata, TypeScript/test-runner configuration, the README, and example configuration remain deferred. Compile-time contract tests live in `tests/unit/application/judgment-provider.type-test.ts`.
 
 ## Layer responsibilities
 
@@ -133,7 +135,7 @@ The application coordinates a routing operation without knowing how Pi, Jev, or 
 2. Filters candidate models using domain eligibility rules.
 3. Avoids inference when no semantic assessment is needed.
 4. Prepares a bounded assessment snapshot.
-5. Obtains semantic judgments through `ContextAssessor`.
+5. Constructs routing questions, obtains answers through `JudgmentProvider`, and maps them into `TaskAssessment`.
 6. Invokes domain selection rules.
 7. Returns a routing decision without changing Pi state.
 
@@ -141,13 +143,17 @@ The application coordinates a routing operation without knowing how Pi, Jev, or 
 
 #### Initial port
 
-`ContextAssessor` is owned by the application and implemented by the TypeSafe adapter. Its conceptual contract is:
+`JudgmentProvider` is owned by the application and will be implemented by the TypeSafe adapter. Its contract is:
 
 ```text
-assess(RoutingContext, cancellation options) -> TaskAssessment
+judge({ context, questions }, cancellation options) -> { answers }
 ```
 
-Its input and output are application/domain-owned types. Neither side of this contract exposes TypeSafe SDK response types.
+Application-owned models support Choice, Score, and Noul questions sharing JSON-compatible context. Responses preserve question IDs, literal choice options, distributions, and confidence where applicable. Score values are expected zero-based level indices; Noul returns P(yes), without separate confidence.
+
+The adapter must validate requests and responses at runtime and reject incomplete or invalid results with `JudgmentProviderError`. Static types alone do not enforce probability ranges, distribution sums, or JSON serializability. No SDK types cross the boundary.
+
+Routing-specific questions and answer-to-assessment mapping belong in the application, not the provider adapter. This replaces the originally proposed `ContextAssessor` port; no second port is needed yet.
 
 Configuration and candidate models are passed into the use case as values initially. Add additional ports only when an actual use case needs an external operation; do not introduce generic repositories or services preemptively.
 
@@ -184,15 +190,9 @@ Do not infer that every model-selection event is a manual user override. Disting
 
 ### TypeSafe adapter
 
-`jev-assessor.ts` implements `ContextAssessor`. It owns the TypeSafe-specific request and response mapping, not final model selection.
+`jev-judgment-provider.ts` will implement `JudgmentProvider`. It owns TypeSafe-specific request/response mapping, runtime validation, cancellation, and error normalization—not routing questions or model selection. `client.ts` will own credentials, model/version configuration, deadlines, bounded retries, and transport setup.
 
-| Module | Responsibility |
-| --- | --- |
-| `questions.ts` | Versioned Jev instructions, question definitions, and criteria. |
-| `map-assessment.ts` | Validate answers and map them into domain assessment types. |
-| `client.ts` | Client construction, credentials, request deadlines, bounded retries, and transport configuration. |
-
-The core defines what assessment dimensions mean. The adapter encodes those dimensions using TypeSafe primitives, initially:
+The application defines questions and maps judgments into domain assessment dimensions, initially:
 
 - **Choice** for primary task category.
 - **Score** for complexity or reasoning demand.
@@ -217,7 +217,7 @@ Configuration filenames, precedence, reload behavior, and the public schema are 
 
 ### Composition root and entry point
 
-`composition-root.ts` creates concrete adapters and injects the assessor into the routing use case. It is the only place that needs to know the complete dependency graph.
+`composition-root.ts` creates concrete adapters and injects the judgment provider into the routing use case. It is the only place that needs to know the complete dependency graph.
 
 `index.ts` exports Pi's extension factory and delegates setup to the composition root and Pi hook registration. It must not contain routing rules.
 
@@ -233,7 +233,8 @@ Pi request boundary
        -> honor routing controls
        -> filter eligible candidates
        -> prepare bounded evidence
-       -> ContextAssessor -> Jev
+       -> routing questions -> JudgmentProvider -> Jev
+       -> map answers into TaskAssessment
        -> apply deterministic selection policy
        -> return RoutingDecision
   -> verify the decision is still current
@@ -275,7 +276,7 @@ A small classifier input does not imply that a small-context coding model can ha
 ### Unit tests
 
 - Domain tests cover eligibility, ranking, tie-breaking, uncertainty policy, and fallbacks with no network or Pi runtime.
-- Application tests use a fake assessor and verify orchestration, inference bypass, cancellation, and failure handling.
+- Application tests use a fake judgment provider and verify orchestration, inference bypass, cancellation, and failure handling.
 
 ### Integration tests
 
