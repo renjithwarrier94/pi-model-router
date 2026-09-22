@@ -2,9 +2,9 @@
 
 ## Status and scope
 
-This document describes the intended architecture of a model-routing extension for the Pi coding agent. Implemented pieces include SDK-independent judgment and conversation snapshot models, the `JudgmentProvider` port and error type, the TypeSafe adapter with runtime validation, and the Pi context mapper. Minimal npm tooling, compile-time contract tests, mocked-transport tests, and in-memory Pi mapping tests are included. Routing logic and Pi lifecycle wiring remain deferred. See [TypeSafe adapter](typesafe-adapter.md) and [Pi context mapping](pi-context.md) for details.
+This document describes the intended architecture of a model-routing extension for the Pi coding agent. Implemented pieces include SDK-independent judgment and conversation snapshot models, the `JudgmentProvider` port and error type, the TypeSafe adapter with runtime validation, the Pi context mapper, and model-option types with strict configuration validation. Minimal npm tooling, compile-time contract tests, mocked-transport tests, and in-memory Pi mapping tests are included. Routing logic and Pi lifecycle wiring remain deferred. See [TypeSafe adapter](typesafe-adapter.md) and [Pi context mapping](pi-context.md) for details.
 
-Empty directories contain `.gitkeep` placeholders. Except for the judgment/snapshot models, judgment port, TypeSafe adapter, and Pi context mapper, the filenames below are planned responsibilities, not existing implementations or a requirement to create every module immediately.
+Empty directories contain `.gitkeep` placeholders. Except for the judgment/snapshot models, judgment port, TypeSafe adapter, Pi context mapper, and configuration schema/model-option types, the filenames below are planned responsibilities, not existing implementations or a requirement to create every module immediately.
 
 ## Goal
 
@@ -43,6 +43,7 @@ src/
     routing-context.ts
     task-assessment.ts
     model-profile.ts
+    model-option.ts                 # Configured provider/model/thinking candidate
     routing-policy.ts
     routing-decision.ts
     filter-models.ts
@@ -102,7 +103,7 @@ docs/
   decisions/
 ```
 
-Minimal package metadata and TypeScript/test tooling are implemented; the README and example router configuration remain deferred. Compile-time contract tests live in `tests/unit/application/judgment-provider.type-test.ts` and mocked SDK transport tests in `tests/integration/typesafe/jev-judgment-provider.test.ts`.
+Minimal package metadata, TypeScript/test tooling, and an illustrative example router configuration are implemented; the README remains deferred. Compile-time contract tests live in `tests/unit/application/judgment-provider.type-test.ts` and mocked SDK transport tests in `tests/integration/typesafe/jev-judgment-provider.test.ts`.
 
 ## Layer responsibilities
 
@@ -218,7 +219,9 @@ The configuration adapter reads external configuration, validates its shape, and
 - Credentials must not be embedded in committed example configuration or domain objects.
 - Project-local configuration must respect Pi's project-trust boundary.
 
-Configuration filenames, precedence, reload behavior, and the public schema are deferred decisions. Document them in `docs/configuration.md` when specified.
+`config-schema.ts` implements strict version-1 configuration parsing into domain-owned `ModelOption` values, with finite metric bounds, category and thinking-level validation, uniqueness checks, and rejection of unknown fields. Config parsing does not imply that a candidate is available or supported by Pi.
+
+Global `~/.pi/agent/model-router.json` and trusted-project `.pi/model-router.json` locations are specified. An explicit project options list replaces the global list; omission inherits, and an empty list clears it. File loading, precedence resolution, trust integration, and reload behavior remain unimplemented. See [Configuration](configuration.md) for the format, validation rules, and runtime eligibility checks still required.
 
 ### Composition root and entry point
 

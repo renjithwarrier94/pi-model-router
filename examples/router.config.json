@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "options": [
+    {
+      "id": "sonnet-medium",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-5",
+      "thinkingLevel": "medium",
+      "deepSweScore": 65,
+      "costPerTaskUsd": 0.15,
+      "categories": ["implement", "diagnose", "review"]
+    },
+    {
+      "id": "sonnet-high",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-5",
+      "thinkingLevel": "high",
+      "deepSweScore": 70,
+      "costPerTaskUsd": 0.25,
+      "categories": ["implement", "diagnose", "review", "design"]
+    },
+    {
+      "id": "gpt-general",
+      "provider": "openai",
+      "model": "gpt-5.2",
+      "thinkingLevel": "low",
+      "deepSweScore": 60,
+      "costPerTaskUsd": 0.1,
+      "categories": ["general"]
+    }
+  ]
+}
