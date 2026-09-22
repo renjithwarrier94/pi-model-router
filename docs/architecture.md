@@ -2,9 +2,9 @@
 
 ## Status and scope
 
-This document describes the intended architecture of a model-routing extension for the Pi coding agent. The repository contains the directory skeleton, SDK-independent judgment models, the `JudgmentProvider` port and error type, and the TypeSafe adapter with runtime validation. Minimal npm tooling, compile-time contract tests, and mocked-transport integration tests are included. Routing logic and Pi integration remain deferred. See [TypeSafe adapter](typesafe-adapter.md) for configuration and validation details.
+This document describes the intended architecture of a model-routing extension for the Pi coding agent. Implemented pieces include SDK-independent judgment and conversation snapshot models, the `JudgmentProvider` port and error type, the TypeSafe adapter with runtime validation, and the Pi context mapper. Minimal npm tooling, compile-time contract tests, mocked-transport tests, and in-memory Pi mapping tests are included. Routing logic and Pi lifecycle wiring remain deferred. See [TypeSafe adapter](typesafe-adapter.md) and [Pi context mapping](pi-context.md) for details.
 
-Empty directories contain `.gitkeep` placeholders. Except for the judgment models, port, and TypeSafe adapter, the filenames below are planned responsibilities, not existing implementations or a requirement to create every module immediately.
+Empty directories contain `.gitkeep` placeholders. Except for the judgment/snapshot models, judgment port, TypeSafe adapter, and Pi context mapper, the filenames below are planned responsibilities, not existing implementations or a requirement to create every module immediately.
 
 ## Goal
 
@@ -50,6 +50,7 @@ src/
   application/
     models/
       judgment.ts
+      conversation-snapshot.ts
     ports/
       judgment-provider.ts
     use-cases/
@@ -111,7 +112,7 @@ The domain defines the vocabulary and pure rules of routing. It must not import 
 
 | Module | Responsibility |
 | --- | --- |
-| `routing-context.ts` | Framework-neutral request and conversation snapshot, observed requirements, and context-size estimates. |
+| `routing-context.ts` | Routing-specific observed requirements and context-size estimates; the incoming conversation snapshot is application-owned. |
 | `task-assessment.ts` | Semantic judgments such as task category and complexity, with uncertainty represented separately from observed facts. |
 | `model-profile.ts` | Provider/model identity, supported inputs, context capacity, and configured capability or preference metadata. |
 | `routing-policy.ts` | Eligibility constraints, ranking preferences, uncertainty thresholds, and fallback rules. |
@@ -139,7 +140,9 @@ The application coordinates a routing operation without knowing how Pi, Jev, or 
 6. Invokes domain selection rules.
 7. Returns a routing decision without changing Pi state.
 
-`prepare-context.ts` selects and bounds relevant evidence after Pi-specific structures have been translated. Truncation or missing evidence must remain visible in the prepared snapshot.
+`models/conversation-snapshot.ts` defines `ConversationSnapshot`, `ChatMessage`, and `ConversationSummary` without SDK dependencies. The Pi mapper supplies an unbounded, unredacted snapshot; it does not send it to Jev.
+
+`prepare-context.ts` will select, bound, and redact relevant evidence after Pi-specific structures have been translated, including summary text. Truncation or missing evidence must remain visible in the prepared snapshot.
 
 #### Initial port
 
@@ -171,6 +174,8 @@ The Pi adapter owns the host-specific lifecycle and side effects:
 - Maintain overrides and restore branch-appropriate session state.
 
 Only this adapter and the outer entry/wiring modules may reference Pi APIs. The core must never receive an `ExtensionContext`, session manager, or Pi model object.
+
+`map-context.ts` is implemented using `buildSessionProjection()` so branch selection, compaction, and context edits are handled by Pi. It retains user/assistant text and image counts, with branch/compaction summaries separate from direct conversation. System messages, assistant thinking/tool calls, tool results, bash execution, and custom extension messages are excluded. See [Pi context mapping](pi-context.md) for the contract and limitations.
 
 #### Initial routing boundary
 

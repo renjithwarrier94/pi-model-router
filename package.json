@@ -8,12 +8,13 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/integration/typesafe/*.test.ts"
+    "test": "tsx --test tests/integration/*/*.test.ts"
   },
   "dependencies": {
     "@typesafe-ai/sdk": "^0.6.0"
   },
   "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.87.0",
     "@types/node": "^22.20.4",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3"
