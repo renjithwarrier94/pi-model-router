@@ -2,9 +2,9 @@
 
 ## Status and scope
 
-This document describes the intended architecture of a model-routing extension for the Pi coding agent. Implemented pieces include SDK-independent judgment and conversation snapshot models, the `JudgmentProvider` port and error type, the TypeSafe adapter with runtime validation, the Pi context mapper, and model-option types with strict configuration validation. Minimal npm tooling, compile-time contract tests, mocked-transport tests, and in-memory Pi mapping tests are included. Routing logic and Pi lifecycle wiring remain deferred. See [TypeSafe adapter](typesafe-adapter.md) and [Pi context mapping](pi-context.md) for details.
+This document describes the intended architecture of a model-routing extension for the Pi coding agent. Implemented pieces include SDK-independent judgment and conversation snapshot models, the `JudgmentProvider` port and error type, the TypeSafe adapter with runtime validation, the Pi context mapper, model-option types with strict configuration validation, and bounded context preparation. Minimal npm tooling, compile-time contract tests, mocked-transport tests, and in-memory Pi mapping tests are included. Routing logic and Pi lifecycle wiring remain deferred. See [TypeSafe adapter](typesafe-adapter.md) and [Pi context mapping](pi-context.md) for details.
 
-Empty directories contain `.gitkeep` placeholders. Except for the judgment/snapshot models, judgment port, TypeSafe adapter, Pi context mapper, and configuration schema/model-option types, the filenames below are planned responsibilities, not existing implementations or a requirement to create every module immediately.
+Empty directories contain `.gitkeep` placeholders. Except for the judgment/snapshot models, judgment port, TypeSafe adapter, Pi context mapper, configuration schema/model-option types, and context preparation, the filenames below are planned responsibilities, not existing implementations or a requirement to create every module immediately.
 
 ## Goal
 
@@ -143,7 +143,7 @@ The application coordinates a routing operation without knowing how Pi, Jev, or 
 
 `models/conversation-snapshot.ts` defines `ConversationSnapshot`, `ChatMessage`, and `ConversationSummary` without SDK dependencies. The Pi mapper supplies an unbounded, unredacted snapshot; it does not send it to Jev.
 
-`prepare-context.ts` will select, bound, and redact relevant evidence after Pi-specific structures have been translated, including summary text. Truncation or missing evidence must remain visible in the prepared snapshot.
+`prepare-context.ts` selects the current prompt plus a contiguous suffix of complete user/assistant messages using a 5,600-word soft budget and a single 1,000-word boundary allowance. Formatting is budgeted, omitted history/summaries and unavailable images are reported, and oversized current requests return a skip result. It does not perform redaction or include summary text in v1. Privacy/transmission policy remains deferred. See [Context preparation](context-preparation.md) for limits, options, and tests.
 
 #### Initial port
 

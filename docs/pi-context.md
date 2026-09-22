@@ -13,7 +13,7 @@ pi.on("before_agent_start", (event, ctx) => {
 });
 ```
 
-Hook registration and the use case are not implemented yet. The mapper targets Pi 0.87.0, pinned as a development dependency for typechecking and in-memory integration tests. Production imports of Pi are type-only; the mapper has no runtime SDK import.
+Hook registration is not implemented yet. The pure [context preparation](context-preparation.md) operation is implemented; routing orchestration and redaction remain deferred. The mapper targets Pi 0.87.0, pinned as a development dependency for typechecking and in-memory integration tests. Production imports of Pi are type-only; the mapper has no runtime SDK import.
 
 ## Contract
 
