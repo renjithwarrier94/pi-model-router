@@ -1,4 +1,5 @@
 node_modules/
+evals/private/
 dist/
 .env
 .env.*

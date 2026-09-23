@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This document describes the architecture of a Pi model-routing extension. The judgment port/TypeSafe adapter, OpenRouter-or-direct credential resolution, conversation mapper/preparer, strict model and policy configuration, file loader, runtime candidate checks, pure selection use case, and Pi one-shot assessment/routing hook are implemented. **Unattended routing and calibration are not implemented.** See [TypeSafe adapter](typesafe-adapter.md), [Pi context mapping](pi-context.md), [configuration](configuration.md), and [Pi assessment and routing](pi-assessment.md).
+This document describes the architecture of a Pi model-routing extension. The judgment port/TypeSafe adapter, OpenRouter-or-direct credential resolution, conversation mapper/preparer, strict model and policy configuration, file loader, runtime candidate checks, pure selection use case, and Pi one-shot assessment/routing hook are implemented. **Unattended routing and empirical calibration are not implemented.** An [offline synthetic regression suite](../evals/README.md) now covers policy outcomes without external calls; it is not a quality evaluation. See [TypeSafe adapter](typesafe-adapter.md), [Pi context mapping](pi-context.md), [configuration](configuration.md), and [Pi assessment and routing](pi-assessment.md).
 
 Empty directories contain `.gitkeep` placeholders. The layout below shows implemented files; later boundaries and evaluation tooling may be added as needed.
 
