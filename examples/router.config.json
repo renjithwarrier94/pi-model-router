@@ -1,5 +1,18 @@
 {
   "version": 1,
+  "policy": {
+    "weights": {
+      "reasoningDemand": 0.5,
+      "dependencyScope": 0.3,
+      "contextIntegrationDemand": 0.2
+    },
+    "difficultyToDeepSweScore": [
+      { "difficulty": 0, "score": 45 },
+      { "difficulty": 0.5, "score": 60 },
+      { "difficulty": 1, "score": 75 }
+    ],
+    "maxMissingCriticalEvidenceProbability": 0.7
+  },
   "options": [
     {
       "id": "sonnet-medium",

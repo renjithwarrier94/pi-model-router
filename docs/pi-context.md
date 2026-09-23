@@ -13,7 +13,7 @@ pi.on("before_agent_start", (event, ctx) => {
 });
 ```
 
-`src/index.ts` now registers a Pi `before_agent_start` hook through `assessment-extension.ts`, gated by explicit `/model-router-assess once` consent. The pure [context preparation](context-preparation.md) operation and [task assessment](task-assessment.md) are wired for that one prompt only. Routing selection, model switching, and redaction remain deferred; see [Pi assessment integration](pi-assessment.md). The mapper targets Pi 0.87.0, pinned as a development dependency for typechecking and in-memory integration tests. Production imports of Pi are type-only; the mapper has no runtime SDK import.
+`src/index.ts` registers a Pi `before_agent_start` hook through `assessment-extension.ts`, gated by explicit one-shot `/model-router-assess once` (diagnostics only) or `/model-router-route once` (selection and switch) consent. [Context preparation](context-preparation.md), [task assessment](task-assessment.md), and [routing selection](configuration.md#selection-policy-experimental-uncalibrated) run for the consented prompt only. Redaction remains deferred; see [Pi assessment and routing](pi-assessment.md). The mapper targets Pi 0.87.0, pinned as a development dependency for typechecking and in-memory integration tests. The mapper's Pi imports are type-only; the runtime eligibility adapter imports Pi's model capability helper.
 
 ## Contract
 

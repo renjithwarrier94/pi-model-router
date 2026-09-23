@@ -34,8 +34,7 @@ function harness(provider: JudgmentProvider, hasUI = true) {
   const pi = {
     on(event: string, handler: (...params: any[]) => unknown) { handlers.set(event, handler); return () => {}; },
     registerCommand(name: string, options: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) {
-      assert.equal(name, "model-router-assess");
-      command = options.handler;
+      if (name === "model-router-assess") command = options.handler;
     },
     setModel() { assert.fail("assessment must not switch models"); },
     setThinkingLevel() { assert.fail("assessment must not switch thinking level"); },

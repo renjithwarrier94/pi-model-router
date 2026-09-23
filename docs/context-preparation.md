@@ -5,7 +5,7 @@
 ```ts
 const result = prepareContext(snapshot);
 if (result.status === "skipped") {
-  // Future routing orchestration: retain the current model; do not call Jev.
+  // The one-shot Pi hook retains the current model; it does not call Jev.
   return;
 }
 // result.context is the rendered text for JudgmentRequest.context.
@@ -50,6 +50,6 @@ Only omissions from the supplied snapshot are observable. Messages filtered out 
 - Counts cover the rendered context only, not Jev questions, SDK wrapping, or output tokens. Those need separate request-level headroom later.
 - This step selects and bounds evidence; it does **not redact secrets**. Selected text remains unredacted. The Pi hook requires explicit per-prompt consent before an external assessment; automatic transmission or broader consent needs a stronger privacy policy.
 - Labels are not a security boundary. The future Jev questions must treat supplied conversation as evidence, not instructions, even when it contains role-like labels or adversarial text.
-- This operation has no network calls, model-selection logic, or Pi dependencies. The Pi hook now sends its output through the [task assessment](task-assessment.md) operation only on explicit one-shot consent. No automatic model switching exists.
+- This operation has no network calls, model-selection logic, or Pi dependencies. The Pi hook sends its output through [task assessment](task-assessment.md) only on explicit one-shot consent. `/model-router-route once` may select and switch a model after that assessment; no unattended routing exists.
 
 `tests/unit/application/prepare-context.test.ts` covers exact budget boundaries, one-time allowance, contiguous selection, chronological order, oversize behavior, omission/image metadata, message caps, invalid policies, and frozen input.

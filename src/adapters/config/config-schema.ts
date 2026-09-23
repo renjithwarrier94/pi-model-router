@@ -5,12 +5,15 @@ import {
   type ModelOption,
   type ThinkingLevel,
 } from "../../domain/model-option.js";
+import type { RoutingPolicy, DifficultyScorePoint } from "../../domain/routing-policy.js";
 
 /** On-disk configuration shape, not the routing use case's input contract. */
 export interface ModelRouterConfig {
   readonly version: 1;
   /** Omitted: inherit. Present (including []): replace the inherited list. */
   readonly options?: readonly ModelOption[];
+  /** Omitted: inherit. Present: replace the global policy as a unit. */
+  readonly policy?: RoutingPolicy;
 }
 
 /** Validation errors report a location and rule, never the supplied value. */
@@ -48,11 +51,12 @@ export function parseModelRouterConfigJson(text: string): ModelRouterConfig {
  * Throws on the first invalid field. Unknown properties are rejected.
  */
 export function parseModelRouterConfig(value: unknown): ModelRouterConfig {
-  const config = object(value, "$", ["version", "options"]);
+  const config = object(value, "$", ["version", "options", "policy"]);
   if (!Object.hasOwn(config, "version") || config.version !== 1) {
     throw new ModelRouterConfigError("$.version", "must be 1");
   }
-  if (!Object.hasOwn(config, "options")) return { version: 1 };
+  const policy = Object.hasOwn(config, "policy") ? parsePolicy(config.policy, "$.policy") : undefined;
+  if (!Object.hasOwn(config, "options")) return policy ? { version: 1, policy } : { version: 1 };
   if (!Array.isArray(config.options)) {
     throw new ModelRouterConfigError("$.options", "must be an array");
   }
@@ -78,7 +82,59 @@ export function parseModelRouterConfig(value: unknown): ModelRouterConfig {
     combinations.add(combination);
     options.push(option);
   }
-  return { version: 1, options };
+  return policy ? { version: 1, options, policy } : { version: 1, options };
+}
+
+function parsePolicy(value: unknown, path: string): RoutingPolicy {
+  const raw = object(value, path, ["weights", "difficultyToDeepSweScore", "maxMissingCriticalEvidenceProbability"]);
+  for (const key of ["weights", "difficultyToDeepSweScore", "maxMissingCriticalEvidenceProbability"]) {
+    if (!Object.hasOwn(raw, key)) throw new ModelRouterConfigError(`${path}.${key}`, "is required");
+  }
+  const weightPath = `${path}.weights`;
+  const sourceWeights = object(raw.weights, weightPath, ["reasoningDemand", "dependencyScope", "contextIntegrationDemand"]);
+  const keys = ["reasoningDemand", "dependencyScope", "contextIntegrationDemand"] as const;
+  for (const key of keys) {
+    if (!Object.hasOwn(sourceWeights, key)) throw new ModelRouterConfigError(`${weightPath}.${key}`, "is required");
+  }
+  const weights = {
+    reasoningDemand: nonnegativeNumber(sourceWeights.reasoningDemand, `${weightPath}.reasoningDemand`),
+    dependencyScope: nonnegativeNumber(sourceWeights.dependencyScope, `${weightPath}.dependencyScope`),
+    contextIntegrationDemand: nonnegativeNumber(sourceWeights.contextIntegrationDemand, `${weightPath}.contextIntegrationDemand`),
+  };
+  const sum = weights.reasoningDemand + weights.dependencyScope + weights.contextIntegrationDemand;
+  if (!Number.isFinite(sum) || sum === 0) {
+    throw new ModelRouterConfigError(weightPath, "weights must have a finite, positive sum");
+  }
+  const pointPath = `${path}.difficultyToDeepSweScore`;
+  if (!Array.isArray(raw.difficultyToDeepSweScore) || raw.difficultyToDeepSweScore.length < 2) {
+    throw new ModelRouterConfigError(pointPath, "must have at least two points");
+  }
+  const points: DifficultyScorePoint[] = [];
+  for (let i = 0; i < raw.difficultyToDeepSweScore.length; i++) {
+    const at = `${pointPath}[${i}]`;
+    const point = object(raw.difficultyToDeepSweScore[i], at, ["difficulty", "score"]);
+    for (const key of ["difficulty", "score"]) {
+      if (!Object.hasOwn(point, key)) throw new ModelRouterConfigError(`${at}.${key}`, "is required");
+    }
+    const difficulty = nonnegativeNumber(point.difficulty, `${at}.difficulty`);
+    if (difficulty > 1) throw new ModelRouterConfigError(`${at}.difficulty`, "must be at most 1");
+    const score = nonnegativeNumber(point.score, `${at}.score`);
+    if (score > 100) throw new ModelRouterConfigError(`${at}.score`, "must be at most 100");
+    if (i > 0 && difficulty <= points[i - 1]!.difficulty) {
+      throw new ModelRouterConfigError(`${at}.difficulty`, "must be strictly increasing");
+    }
+    if (i > 0 && score < points[i - 1]!.score) {
+      throw new ModelRouterConfigError(`${at}.score`, "must be nondecreasing");
+    }
+    points.push({ difficulty, score });
+  }
+  if (points[0]!.difficulty !== 0) throw new ModelRouterConfigError(`${pointPath}[0].difficulty`, "must be 0");
+  if (points[points.length - 1]!.difficulty !== 1) {
+    throw new ModelRouterConfigError(`${pointPath}[${points.length - 1}].difficulty`, "must be 1");
+  }
+  const missing = nonnegativeNumber(raw.maxMissingCriticalEvidenceProbability, `${path}.maxMissingCriticalEvidenceProbability`);
+  if (missing > 1) throw new ModelRouterConfigError(`${path}.maxMissingCriticalEvidenceProbability`, "must be at most 1");
+  return { weights, difficultyToDeepSweScore: points, maxMissingCriticalEvidenceProbability: missing };
 }
 
 function parseOption(value: unknown, path: string): ModelOption {

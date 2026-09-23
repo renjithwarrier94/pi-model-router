@@ -196,6 +196,62 @@ test("the checked-in example satisfies the schema", async () => {
   assert.equal(parseModelRouterConfigJson(json).options?.length, 3);
 });
 
+const policy = {
+  weights: { reasoningDemand: 0.5, dependencyScope: 0.3, contextIntegrationDemand: 0.2 },
+  difficultyToDeepSweScore: [
+    { difficulty: 0, score: 45 }, { difficulty: 0.5, score: 60 }, { difficulty: 1, score: 75 },
+  ],
+  maxMissingCriticalEvidenceProbability: 0.7,
+};
+
+function rejectsPolicy(bad: unknown, path: string) {
+  rejects({ version: 1, policy: bad }, `$.policy${path}`);
+}
+
+test("optional policy is detached and valid in a config without options", () => {
+  const input = { version: 1 as const, policy };
+  const result = parseModelRouterConfig(input);
+  assert.deepEqual(result, input);
+  assert.notEqual(result.policy, policy);
+  assert.notEqual(result.policy?.weights, policy.weights);
+  assert.notEqual(result.policy?.difficultyToDeepSweScore, policy.difficultyToDeepSweScore);
+  assert.notEqual(result.policy?.difficultyToDeepSweScore[1], policy.difficultyToDeepSweScore[1]);
+  const original = policy.difficultyToDeepSweScore[1]!.score;
+  policy.difficultyToDeepSweScore[1]!.score = 99;
+  assert.equal(result.policy?.difficultyToDeepSweScore[1]?.score, original);
+  policy.difficultyToDeepSweScore[1]!.score = original;
+});
+
+test("policy requires complete finite nonnegative weights and positive finite sum", () => {
+  rejectsPolicy(null, "");
+  rejectsPolicy({ ...policy, extra: "private" }, "");
+  rejectsPolicy({ ...policy, weights: { ...policy.weights, typo: 1 } }, ".weights");
+  rejectsPolicy({ ...policy, weights: { reasoningDemand: 1 } }, ".weights.dependencyScope");
+  for (const v of [-1, NaN, Infinity, null, "0.5", undefined]) {
+    rejectsPolicy({ ...policy, weights: { ...policy.weights, reasoningDemand: v } }, ".weights.reasoningDemand");
+  }
+  rejectsPolicy({ ...policy, weights: { reasoningDemand: 0, dependencyScope: 0, contextIntegrationDemand: 0 } }, ".weights");
+  rejectsPolicy({ ...policy, weights: { reasoningDemand: Number.MAX_VALUE, dependencyScope: Number.MAX_VALUE, contextIntegrationDemand: 1 } }, ".weights");
+});
+
+test("curve rejects holes, out-of-range, unordered, decreasing, and missing endpoints", () => {
+  rejectsPolicy({ ...policy, difficultyToDeepSweScore: [] }, ".difficultyToDeepSweScore");
+  rejectsPolicy({ ...policy, difficultyToDeepSweScore: Array(2) }, ".difficultyToDeepSweScore[0]");
+  rejectsPolicy({ ...policy, difficultyToDeepSweScore: [{ difficulty: 0, score: 40 }, { difficulty: 0, score: 45 }] }, ".difficultyToDeepSweScore[1].difficulty");
+  rejectsPolicy({ ...policy, difficultyToDeepSweScore: [{ difficulty: 0, score: 60 }, { difficulty: 1, score: 40 }] }, ".difficultyToDeepSweScore[1].score");
+  rejectsPolicy({ ...policy, difficultyToDeepSweScore: [{ difficulty: 0.1, score: 40 }, { difficulty: 1, score: 45 }] }, ".difficultyToDeepSweScore[0].difficulty");
+  rejectsPolicy({ ...policy, difficultyToDeepSweScore: [{ difficulty: 0, score: 40 }, { difficulty: 0.9, score: 45 }] }, ".difficultyToDeepSweScore[1].difficulty");
+  rejectsPolicy({ ...policy, difficultyToDeepSweScore: [{ difficulty: 0, score: 40, secret: true }, { difficulty: 1, score: 45 }] }, ".difficultyToDeepSweScore[0]");
+  rejectsPolicy({ ...policy, difficultyToDeepSweScore: [{ difficulty: 0, score: 40 }, { difficulty: 1, score: 101 }] }, ".difficultyToDeepSweScore[1].score");
+  rejectsPolicy({ ...policy, difficultyToDeepSweScore: [{ difficulty: 0, score: 40 }, { difficulty: 1.1, score: 45 }] }, ".difficultyToDeepSweScore[1].difficulty");
+});
+
+test("missing-evidence threshold requires a probability", () => {
+  for (const v of [-1, 1.1, NaN, Infinity, "0.7", undefined]) {
+    rejectsPolicy({ ...policy, maxMissingCriticalEvidenceProbability: v }, ".maxMissingCriticalEvidenceProbability");
+  }
+});
+
 test("validates frozen input without mutating it", () => {
   const candidate = Object.freeze(option({ categories: Object.freeze(["general"]) }));
   const input = Object.freeze({ version: 1, options: Object.freeze([candidate]) });

@@ -1,25 +1,19 @@
-# Pi assessment integration (opt-in preview)
+# Pi assessment and routing (one-shot opt-in)
 
-`src/index.ts` is the Pi package entry point. Its manifest is `package.json` → `pi.extensions`. The hook is in `src/adapters/pi/assessment-extension.ts` and only performs a one-shot **assessment**, not model selection or switching.
+`src/index.ts` loads the Pi hook in `src/adapters/pi/assessment-extension.ts`. **Neither operation runs automatically.** Install dependencies, then load from the repository root with `pi --extension ./src/index.ts`. The TypeSafe SDK reads `TYPESAFE_API_KEY` from the Pi process environment; do not put the key in router config.
 
-## Try it
+## Commands
 
-Install dependencies in this package, then load the extension from the repository root:
+- `/model-router-assess once`: assess the next prompt and display five judgments; **never switch the model**.
+- `/model-router-route once`: assess the next prompt, select an eligible configured option, and change the **session model and thinking level** before Pi sends the prompt. A later prompt keeps the selected model until you change it; the *permission to reassess and switch* applies only to this one prompt.
+- `/model-router-assess off` or `/model-router-route off`: cancel either pending one-shot command. Issuing `once` for either command replaces the previous pending command. Invalid arguments do not grant consent.
 
-```sh
-pi --extension ./src/index.ts
-```
+Either `once` command explicitly consents to sending the **current prompt and selected, unredacted historical user/assistant text** to TypeSafe. The hook runs `mapContext()` → `prepareContext()` → `assessTask()`; routing additionally loads configuration, filters Pi candidates, calls pure `selectModel()`, then applies Pi's `setModel()` and `setThinkingLevel()`. Permission is consumed before I/O, even on failure or oversized input, and reset on session start/shutdown or tree navigation. Responses from cancelled/changed sessions or branches are ignored. No results or raw input are injected into the model transcript or stored as extension entries. Pi's own model-change entry is recorded when switching. Results appear as UI notifications (TUI/RPC); non-UI modes still perform an explicitly requested route but cannot show notifications.
 
-Set `TYPESAFE_API_KEY` in the Pi process environment. This key is read by the TypeSafe SDK; do not put it in `model-router.json`. In an interactive session, run:
+## Configuration and safety
 
-```text
-/model-router-assess once
-```
+Routing needs both a `policy` and nonempty `options` in `~/.pi/agent/model-router.json` (or Pi's `PI_CODING_AGENT_DIR`) and/or a **trusted** `.pi/model-router.json`. See [configuration](configuration.md) and the uncalibrated [example](../examples/router.config.json). Invalid or unreadable configuration, no runtime-eligible options, unknown context usage, oversized current requests, assessment failure, `unclear` category, or high missing-evidence probability leave the current model unchanged. When no category-compatible model meets the required score, the best-scoring compatible option is chosen with a threshold-unmet warning. A failed switch does not change thinking level; if an error occurs *after* switching, inspect the current Pi model.
 
-Then submit the next prompt. The command explicitly consents to sending **the current prompt and selected, unredacted historical user/assistant text** to TypeSafe for this one assessment. The hook uses `mapContext()` → `prepareContext()` → `assessTask()` with the `JevJudgmentProvider`. It displays the primary category, three raw 0–2 scores, and the probability that critical evidence is missing. It makes no changes to the Pi model, thinking level, prompt, or transcript. It does not persist results. Other existing Pi/provider calls proceed normally.
+**Privacy:** opt-in is **not redaction**. Selected text can contain secrets; tool calls/results, system messages, thinking blocks, and image bytes are not sent by the context mapper, but selected user/assistant text, counts and omission notices are. Do not grant consent for material you do not want sent to TypeSafe. No automatic transmission is enabled. Jev instructions distinguish evidence from instructions, but prompt-injection resistance is not guaranteed.
 
-Without the command, the hook is inert: no TypeSafe client construction, provider call, or context access. Run `/model-router-assess off` before the next prompt to cancel. An unrecognized argument shows usage and grants no consent. Consent is consumed **before** snapshot preparation, including on errors or skipped/oversized prompts; to retry, run `once` again. It is reset at session start, shutdown, or tree navigation (including reload/session replacement). Late results from a cancelled or changed session/branch are ignored. The current Pi operation signal is forwarded to the provider. Notifications are shown only when Pi reports UI availability; no raw context or SDK error messages are shown in notifications.
-
-**Privacy:** this is deliberate opt-in to external transmission, **not redaction**. Text may contain secrets even when Pi's mapper excludes tools, images, thinking blocks, and system messages. Conversation summaries are omitted by the preparer. Image counts, omission notices, and selected message text are still transmitted; no image bytes are included. Do not enable this command for prompts or historical text you do not wish to send to TypeSafe. Per-prompt approval does not solve the need for a stricter policy before enabling fully automatic routing. Jev instructions distinguish conversation evidence from instructions, but prompt-injection resistance is not guaranteed.
-
-`~/.pi/agent/model-router.json` and `.pi/model-router.json` are **not yet loaded**. No candidate validation, score aggregation, model selection, fallbacks, or Pi model switching is performed. A response is diagnostic only; high missing-evidence probability does not select a stronger model. There is no live API call in tests: integration tests simulate Pi hooks and a fake port; separate tests exercise the real SDK adapter with mocked transport.
+**Quality:** weights and benchmark mappings are uncalibrated; DeepSWE measures coding, not all task categories. Context capacity uses Pi's usage estimate with a safety reserve; it is not a guarantee of provider acceptance. Neither cost nor score is verified at runtime. Tests exercise hooks, loader, eligibility, and selection without calling the real TypeSafe API; separate transport tests use a mocked SDK.

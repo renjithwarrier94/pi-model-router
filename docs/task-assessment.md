@@ -2,7 +2,7 @@
 
 `src/application/use-cases/assess-task.ts` defines five application-owned questions. `assessTask(context, provider, { signal? })` submits them together through `JudgmentProvider` and returns `TaskAssessment` from `src/application/models/task-assessment.ts`. The TypeSafe adapter translates these definitions to Jev's Choice, Score, and Noul primitives; no SDK types enter the application. The questions share the same context and are independent; none sees another question's answer.
 
-**Scope:** `context` must have been approved for external transmission by the caller. `prepareContext()` selects and bounds text but does **not** redact it. The Pi hook invokes this operation **only after an explicit `/model-router-assess once` command**: this is per-prompt consent to send the selected, unredacted text. Without that command, no assessment or network call occurs. Tests use approved literal strings and mocked transport. No credentials or live Jev calls are needed for tests.
+**Scope:** `context` must have been approved for external transmission by the caller. `prepareContext()` selects and bounds text but does **not** redact it. The Pi hook invokes this operation **only after an explicit `/model-router-assess once` or `/model-router-route once` command**: this is per-prompt consent to send the selected, unredacted text. Without that command, no assessment or network call occurs. Tests use approved literal strings and mocked transport. No credentials or live Jev calls are needed for tests.
 
 ## Judgments
 

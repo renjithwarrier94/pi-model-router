@@ -68,8 +68,8 @@ export function buildTaskAssessmentRequest(context: string): JudgmentRequest<typ
 /**
  * Ask the five independent questions in one call. `context` MUST already be
  * approved for external transmission by the caller (selection alone is NOT
- * redaction). Do not pass prepareContext().context directly without a privacy
- * policy. This operation is not wired to Pi until such a policy exists.
+ * redaction). The Pi adapter obtains one-shot consent before transmitting
+ * prepared context; this operation itself does not enforce that consent.
  * Provider errors/cancellation propagate; no fallback is fabricated.
  */
 export async function assessTask(

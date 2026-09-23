@@ -2,9 +2,9 @@
 
 ## Status and scope
 
-This document describes the intended architecture of a model-routing extension for the Pi coding agent. Implemented pieces include SDK-independent judgment and conversation snapshot models, the `JudgmentProvider` port and error type, the TypeSafe adapter with runtime validation, the Pi context mapper, model-option types with strict configuration validation, bounded context preparation, and the five-question task assessment operation. Minimal npm tooling, compile-time contract tests, mocked-transport tests, and in-memory Pi mapping tests are included. Routing selection and Pi model switching remain deferred; a consent-gated Pi assessment hook is available. See [TypeSafe adapter](typesafe-adapter.md), [Pi context mapping](pi-context.md), and [Pi assessment integration](pi-assessment.md).
+This document describes the architecture of a Pi model-routing extension. The judgment port/TypeSafe adapter, conversation mapper/preparer, strict model and policy configuration, file loader, runtime candidate checks, pure selection use case, and Pi one-shot assessment/routing hook are implemented. **Unattended routing and calibration are not implemented.** See [TypeSafe adapter](typesafe-adapter.md), [Pi context mapping](pi-context.md), [configuration](configuration.md), and [Pi assessment and routing](pi-assessment.md).
 
-Empty directories contain `.gitkeep` placeholders. Except for the judgment/snapshot models, judgment port, TypeSafe adapter, Pi context mapper, configuration schema/model-option types, context preparation, task assessment, and the consent-gated Pi assessment hook, the filenames below are planned responsibilities, not existing implementations or a requirement to create every module immediately.
+Empty directories contain `.gitkeep` placeholders. The layout below shows implemented files; later boundaries and evaluation tooling may be added as needed.
 
 ## Goal
 
@@ -37,69 +37,40 @@ No dependency-injection container, monorepo, database, or separate service is re
 
 ```text
 src/
-  index.ts                         # Planned Pi extension entry point
-  composition-root.ts              # Planned dependency wiring
+  index.ts
   domain/
-    routing-context.ts
-    task-assessment.ts
-    model-profile.ts
-    model-option.ts                 # Configured provider/model/thinking candidate
+    model-option.ts
     routing-policy.ts
-    routing-decision.ts
-    filter-models.ts
-    select-model.ts
   application/
     models/
       judgment.ts
       conversation-snapshot.ts
+      prepared-context.ts
+      task-assessment.ts
     ports/
       judgment-provider.ts
     use-cases/
-      route-request.ts
-    prepare-context.ts
-    questions.ts
-    map-assessment.ts
+      prepare-context.ts
+      assess-task.ts
+      select-model.ts
   adapters/
     pi/
-      register-hooks.ts
+      assessment-extension.ts
       map-context.ts
-      map-models.ts
-      apply-decision.ts
-      commands.ts
-      session-state.ts
+      runtime-candidates.ts
     typesafe/
-      jev-judgment-provider.ts      # Includes client construction
+      jev-judgment-provider.ts
       map-judgment.ts
     config/
       load-config.ts
       config-schema.ts
-      map-config.ts
 
 tests/
-  unit/
-    domain/
-    application/
-  integration/
-    pi/
-    typesafe/
-    config/
-  architecture/
-  fixtures/
-  fakes/
-    fake-judgment-provider.ts
-
-evals/
-  cases/
-    routing.jsonl
-  run-evaluation.ts
-  metrics.ts
+  unit/application/
+  integration/{pi,typesafe,config}/
 
 examples/
   router.config.json
-
-docs/
-  architecture.md
-  configuration.md
   decisions/
 ```
 
@@ -107,19 +78,19 @@ Minimal package metadata, TypeScript/test tooling, and an illustrative example r
 
 ## Layer responsibilities
 
-### Domain
+### Domain and selection boundaries
 
-The domain defines the vocabulary and pure rules of routing. It must not import Pi, TypeSafe, filesystem, networking, or UI APIs.
+The domain defines the vocabulary and policy data of routing and must not import Pi, TypeSafe, filesystem, networking, or UI APIs. The table also identifies the application selection use case and the outer runtime-eligibility adapter.
 
 | Module | Responsibility |
 | --- | --- |
-| `routing-context.ts` | Routing-specific observed requirements and context-size estimates; the incoming conversation snapshot is application-owned. |
-| `task-assessment.ts` | Semantic judgments such as task category and complexity, with uncertainty represented separately from observed facts. |
-| `model-profile.ts` | Provider/model identity, supported inputs, context capacity, and configured capability or preference metadata. |
-| `routing-policy.ts` | Eligibility constraints, ranking preferences, uncertainty thresholds, and fallback rules. |
-| `routing-decision.ts` | A decision to switch, retain the current model, or report no eligible candidate, with structured reason codes. |
-| `filter-models.ts` | Pure eligibility checks against hard constraints. |
-| `select-model.ts` | Pure ranking, tie-breaking, and fallback selection over eligible candidates. |
+| `routing-context.ts` (planned) | Routing-specific observed requirements and context-size estimates; the incoming conversation snapshot is application-owned. |
+| `application/models/task-assessment.ts` | Semantic judgments such as task category and complexity, with uncertainty represented separately from observed facts. |
+| `model-option.ts` | Configured model identity, cost, measured score, and categories; runtime eligibility lives in the Pi adapter. |
+| `routing-policy.ts` | Configurable demand weights, score curve, and missing-evidence threshold, expressed as host-independent data. |
+| `SelectionDecision` in `select-model.ts` | A pure proposal to switch or remain unchanged, with structured reasons. |
+| `adapters/pi/runtime-candidates.ts` | Pi-specific registry/auth, modality, scope, and capacity checks, before pure selection. |
+| `application/use-cases/select-model.ts` | Pure ranking, tie-breaking, and fallback selection over host-eligible candidates. |
 
 Model identities are plain data rather than Pi SDK objects. Configured capability tiers are policy metadata, not claims inferred from model names.
 
@@ -131,19 +102,11 @@ Domain functions should be deterministic for the same inputs. Any state that aff
 
 The application coordinates a routing operation without knowing how Pi, Jev, or configuration files work.
 
-`route-request.ts` is the initial use case. It receives normalized context, candidate model profiles, policy, and routing-control state as plain data. It:
-
-1. Handles disabled routing and explicit model pinning without unnecessary classification.
-2. Filters candidate models using domain eligibility rules.
-3. Avoids inference when no semantic assessment is needed.
-4. Prepares a bounded assessment snapshot.
-5. Constructs routing questions, obtains answers through `JudgmentProvider`, and maps them into `TaskAssessment`.
-6. Invokes domain selection rules.
-7. Returns a routing decision without changing Pi state.
+`prepare-context.ts`, `assess-task.ts`, and `select-model.ts` are independent application operations. The Pi adapter coordinates them after explicit one-shot consent; it skips classification when config or runtime candidates are missing. `selectModel` takes only plain assessment, eligible option, and policy values and returns a structured decision without changing Pi state.
 
 `models/conversation-snapshot.ts` defines `ConversationSnapshot`, `ChatMessage`, and `ConversationSummary` without SDK dependencies. The Pi mapper supplies an unbounded, unredacted snapshot; it does not send it to Jev.
 
-`prepare-context.ts` selects the current prompt plus a contiguous suffix of complete user/assistant messages using a 5,600-word soft budget and a single 1,000-word boundary allowance. Formatting is budgeted, omitted history/summaries and unavailable images are reported, and oversized current requests return a skip result. It does not perform redaction or include summary text in v1. Privacy/transmission policy remains deferred. See [Context preparation](context-preparation.md) for limits, options, and tests.
+`prepare-context.ts` selects the current prompt plus a contiguous suffix of complete user/assistant messages using a 5,600-word soft budget and a single 1,000-word boundary allowance. Formatting is budgeted, omitted history/summaries and unavailable images are reported, and oversized current requests return a skip result. It does not perform redaction or include summary text in v1. Per-prompt consent gates current external sends; unattended transmission needs stronger privacy controls. See [Context preparation](context-preparation.md) for limits, options, and tests.
 
 #### Initial port
 
@@ -172,19 +135,17 @@ The Pi adapter owns the host-specific lifecycle and side effects:
 - Resolve selected provider/model IDs and call Pi's model-switching API.
 - Distinguish proposed decisions from successfully applied switches.
 - Present routing status without placing diagnostic messages into model context unnecessarily.
-- Maintain overrides and restore branch-appropriate session state.
+- Reset pending one-shot consent on session/branch transitions; Pi records model and thinking-level changes as session state.
 
 Only this adapter and the outer entry/wiring modules may reference Pi APIs. The core must never receive an `ExtensionContext`, session manager, or Pi model object.
 
-`src/index.ts` and `assessment-extension.ts` register a consent-gated one-shot assessment hook. It reports only numerical/category judgments and never switches models. No automatic routing occurs without a separate selection policy and transmission policy. See [Pi assessment integration](pi-assessment.md).
+`src/index.ts` and `assessment-extension.ts` register a consent-gated one-shot hook. The assessment command reports judgments only; the route command uses `selectModel()` and may switch the session model and thinking level. Neither command runs automatically. See [Pi assessment and routing](pi-assessment.md).
 
 `map-context.ts` is implemented using `buildSessionProjection()` so branch selection, compaction, and context edits are handled by Pi. It retains user/assistant text and image counts, with branch/compaction summaries separate from direct conversation. System messages, assistant thinking/tool calls, tool results, bash execution, and custom extension messages are excluded. See [Pi context mapping](pi-context.md) for the contract and limitations.
 
 #### Initial routing boundary
 
-Start with routing at `before_agent_start`, using the expanded prompt and relevant active-branch context. Hold the chosen model through the ensuing tool loop rather than reclassifying every tool result.
-
-This is the intended v1 behavior, not a verified implementation guarantee. Integration tests must establish switch timing and behavior for retries, queued prompts, steering, other extensions, and the supported Pi version.
+Routing runs at `before_agent_start` after one-shot consent, using the expanded prompt and active-branch context. The chosen model stays active for the tool loop; queued turns and interactions with other extensions require further runtime validation.
 
 Hook selection remains inside this adapter so future per-turn routing does not force a redesign of domain rules.
 
@@ -206,7 +167,7 @@ The application defines the implemented v1 question set:
 - Three independently anchored **Scores** for reasoning demand, dependency scope, and context integration demand.
 - **Noul** for missing critical evidence (P(yes) indicates insufficient evidence, not greater difficulty).
 
-The operation returns raw distributions and confidence for later deterministic policy; it does not yet select a model.
+The operation returns raw distributions and confidence. The separate pure selection use case uses the three expected Score values, category, and missing-evidence probability.
 
 Ask independent questions over the same state together. Do not ask Jev to infer facts already available in code, such as model authentication, input support, or known context capacity.
 
@@ -225,33 +186,23 @@ The configuration adapter reads external configuration, validates its shape, and
 
 `config-schema.ts` implements strict version-1 configuration parsing into domain-owned `ModelOption` values, with finite metric bounds, category and thinking-level validation, uniqueness checks, and rejection of unknown fields. Config parsing does not imply that a candidate is available or supported by Pi.
 
-Global `~/.pi/agent/model-router.json` and trusted-project `.pi/model-router.json` locations are specified. An explicit project options list replaces the global list; omission inherits, and an empty list clears it. File loading, precedence resolution, trust integration, and reload behavior remain unimplemented. See [Configuration](configuration.md) for the format, validation rules, and runtime eligibility checks still required.
+`load-config.ts` reads global configuration and, only when Pi reports project trust, project `.pi/model-router.json`. Explicit project options replace the global list; a project policy replaces the global policy independently. Invalid config aborts this route. Config is reloaded on each explicit route, not watched. See [Configuration](configuration.md).
 
 ### Composition root and entry point
 
-`composition-root.ts` creates concrete adapters and injects the judgment provider into the routing use case. It is the only place that needs to know the complete dependency graph.
-
-`index.ts` exports Pi's extension factory and delegates setup to the composition root and Pi hook registration. It must not contain routing rules.
-
-The eventual package will explicitly declare `src/index.ts` in its Pi extension manifest. Ship all referenced source files, keep third-party runtime dependencies in `dependencies`, and follow the supported Pi distribution's peer-dependency requirements.
+`index.ts` exports Pi's extension factory and registers the adapter. Provider and runtime dependencies are constructed at the adapter edge; application policy stays Pi-agnostic. `package.json` declares `src/index.ts` in the Pi extension manifest, with Pi packages as peers and TypeSafe as a runtime dependency.
 
 ## Runtime flow
 
 ```text
-Pi request boundary
-  -> translate request and active-branch context
-  -> load normalized policy and candidate availability
-  -> route-request
-       -> honor routing controls
-       -> filter eligible candidates
-       -> prepare bounded evidence
-       -> routing questions -> JudgmentProvider -> Jev
-       -> map answers into TaskAssessment
-       -> apply deterministic selection policy
-       -> return RoutingDecision
-  -> verify the decision is still current
-  -> resolve and apply the selected model through Pi
-  -> report the actual outcome
+Pi before_agent_start (one-shot route consent)
+  -> load trusted configuration
+  -> filter Pi runtime candidates
+  -> map active context and prepare bounded evidence
+  -> assessTask -> JudgmentProvider -> Jev
+  -> selectModel(assessment, eligible options, policy)
+  -> verify session/branch and apply model + thinking level in Pi
+  -> report actual outcome
 ```
 
 Selecting a candidate and successfully switching to it are separate events. A failed switch must not be reported as a successful route.
@@ -260,15 +211,14 @@ Selecting a candidate and successfully switching to it are separate events. A fa
 
 | Condition | Intended behavior |
 | --- | --- |
-| Routing disabled | Bypass automatic selection and leave host model control unchanged. |
-| Explicit model pin | Skip Jev; validate the pin against applicable constraints and availability. |
-| Jev timeout or service failure | Use the configured deterministic failure policy; do not treat failure as a low-complexity judgment. |
-| Ambiguous assessment | Apply an explicit uncertainty policy, potentially preferring a more capable eligible model. |
+| No one-shot consent | No assessment, file access, or model selection. |
+| Jev timeout or service failure | Leave the current model unchanged; never fabricate a low-complexity judgment. |
+| Missing critical evidence / unclear category | Leave the current model unchanged. |
 | No eligible candidate | Return a distinct outcome; never silently relax hard constraints. |
 | Pi rejects a switch | Report the failure and actual model state; any retry candidate must also be eligible. |
 | Cancelled or stale assessment | Discard the result and do not switch models. |
 
-Exact timeout values, fallback ordering, uncertainty thresholds, and whether an unroutable request should continue or stop are product decisions to settle before implementation. Keeping the current model is only a valid automatic fallback when it satisfies the applicable constraints.
+Fallback ordering and missing-evidence threshold are explicit in config/policy. Pi continues with the current model when selection is not possible; unlike automatic routing, this is an opt-in attempt and the current model is user-controlled. Explicit pinning and automatic-mode safeguards remain future work.
 
 ## Privacy and context handling
 
