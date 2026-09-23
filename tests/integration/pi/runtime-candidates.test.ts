@@ -75,3 +75,22 @@ test("aborted runs do not resolve candidate credentials", async () => {
   const h = host({ signal: AbortSignal.abort() });
   assert.deepEqual(await getRuntimeCandidates([base], h.context, event), []);
 });
+
+test("router deadline stops further credential lookups after an in-flight lookup completes", async () => {
+  const controller = new AbortController();
+  let finish: ((value: { ok: true }) => void) | undefined;
+  let lookups = 0;
+  const h = host({ modelRegistry: {
+    getAvailable: () => [hostModel],
+    getApiKeyAndHeaders: () => {
+      lookups++;
+      return new Promise<{ ok: true }>(done => { finish = done; });
+    },
+  } });
+  const pending = getRuntimeCandidates([base, { ...base, id: "second" }], h.context, event, controller.signal);
+  assert.ok(finish);
+  controller.abort();
+  finish({ ok: true });
+  assert.deepEqual(await pending, []);
+  assert.equal(lookups, 1);
+});

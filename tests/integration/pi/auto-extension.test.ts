@@ -34,6 +34,10 @@ function harness(overrides: {
   readonly trusted?: boolean;
   readonly hasUI?: boolean;
   readonly switchModel?: () => Promise<boolean>;
+  readonly failThinking?: boolean;
+  readonly routingTimeoutMs?: number;
+  readonly unknownUsage?: boolean;
+  readonly initialLevel?: string;
 } = {}) {
   const handlers = new Map<string, (...args: any[]) => unknown>();
   const commands = new Map<string, (arg: string, ctx: ExtensionContext) => Promise<void>>();
@@ -44,15 +48,17 @@ function harness(overrides: {
   let trusted = overrides.trusted ?? true;
   let confirm = overrides.confirm ?? (async () => true);
   let activeModel: { provider: string; id: string } | undefined;
-  let currentLevel = "off";
+  let currentLevel = overrides.initialLevel ?? "off";
   let calls = 0;
   let switches = 0;
+  let thinkingCalls = 0;
   const provider = overrides.provider ?? { async judge() { calls++; return { answers } as never; } };
   const ctx = {
     sessionManager, hasUI: overrides.hasUI ?? true, mode: "tui",
     signal: undefined,
     get model() { return activeModel; },
     isProjectTrusted: () => trusted,
+    getContextUsage: () => ({ tokens: overrides.unknownUsage ? null : 100 }),
     ui: {
       notify(message: string) { notices.push(message); },
       setStatus(key: string, text: string | undefined) { statuses.push({ key, text }); },
@@ -67,23 +73,51 @@ function harness(overrides: {
     async setModel(model: { provider: string; id: string }) {
       switches++;
       if (overrides.switchModel && !await overrides.switchModel()) return false;
+      const previousModel = activeModel;
       activeModel = model;
       sessionManager.appendModelChange(model.provider, model.id);
+      if (currentLevel !== "off") {
+        const previousLevel = currentLevel;
+        currentLevel = "off"; // Pi may clamp thinking while changing models.
+        void handlers.get("thinking_level_select")?.({ level: "off", previousLevel }, ctx);
+      }
+      await handlers.get("model_select")?.({ source: "set", model, previousModel }, ctx);
       return true;
     },
-    setThinkingLevel(level: string) { currentLevel = level; },
+    setThinkingLevel(level: string) {
+      thinkingCalls++;
+      if (overrides.failThinking) throw new Error("PRIVATE_THINKING_FAILURE");
+      if (level !== currentLevel) {
+        const previousLevel = currentLevel;
+        currentLevel = level;
+        void handlers.get("thinking_level_select")?.({ level, previousLevel }, ctx);
+      }
+    },
     getThinkingLevel() { return currentLevel; },
     appendEntry() { assert.fail("no data persisted"); },
     sendMessage() { assert.fail("no model-facing router content"); },
   } as unknown as ExtensionAPI;
   createAssessmentExtension(overrides.resolveBackend ?? (async () => ({ provider, recipient: "OpenRouter" })), {
     loadConfig: overrides.loadConfig ?? (async () => config),
-    candidates: async () => [{ option, model: { provider: option.provider, id: option.model } as never }],
-  })(pi);
+    candidates: async () => overrides.unknownUsage ? [] :
+      [{ option, model: { provider: option.provider, id: option.model } as never }],
+  }, overrides.routingTimeoutMs === undefined ? {} : { routingTimeoutMs: overrides.routingTimeoutMs })(pi);
   return {
     notices, statuses, confirmations, ctx,
-    calls: () => calls, switches: () => switches,
+    calls: () => calls, switches: () => switches, thinkingCalls: () => thinkingCalls,
     setTrusted(value: boolean) { trusted = value; },
+    async manualModel(model: { provider: string; id: string }) {
+      const previousModel = activeModel;
+      activeModel = model;
+      await handlers.get("model_select")?.({ source: "set", model, previousModel }, ctx);
+    },
+    async manualThinking(level: string) {
+      const previousLevel = currentLevel;
+      currentLevel = level;
+      await handlers.get("thinking_level_select")?.({ level, previousLevel }, ctx);
+    },
+    model: () => activeModel,
+    level: () => currentLevel,
     setConfirm(value: (message: string) => Promise<boolean>) { confirm = value; },
     async command(name: string, arg: string) { const command = commands.get(name); assert.ok(command); await command(arg, ctx); },
     async run(prompt: string) { await handlers.get("before_agent_start")?.({ type: "before_agent_start", prompt }, ctx); },
@@ -257,6 +291,119 @@ test("a failed Pi model switch revokes automatic consent instead of retrying eve
   assert.equal(h.switches(), 1);
   assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, undefined);
   assert.match(h.notices.at(-1) ?? "", /selected model unavailable/);
+});
+
+test("manual model or thinking-level changes suspend auto, but router-origin changes do not", async () => {
+  const h = harness({ initialLevel: "high" });
+  await h.command("model-router-auto", "on");
+  await h.run("first");
+  await h.run("second");
+  assert.equal(h.calls(), 2);
+  assert.equal(h.statuses.filter(s => s.key === "model-router-auto" && s.text).length, 1);
+  await h.manualModel({ provider: "test", id: "manual" });
+  assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, undefined);
+  await h.run("after manual model");
+  assert.equal(h.calls(), 2);
+  await h.command("model-router-auto", "on");
+  await h.run("third");
+  assert.equal(h.calls(), 3);
+  await h.manualThinking("high");
+  await h.run("after manual level");
+  assert.equal(h.calls(), 3);
+  assert.equal(h.level(), "high");
+  assert.doesNotMatch(JSON.stringify(h.notices), /PRIVATE_/);
+});
+
+test("unknown Pi context usage gives a specific skip message without contacting Jev", async () => {
+  const h = harness({ unknownUsage: true, provider: { async judge(): Promise<never> { assert.fail("unknown usage must not send"); } } });
+  await h.command("model-router-auto", "on");
+  await h.run("first turn after compaction");
+  assert.equal(h.switches(), 0);
+  assert.match(h.notices.at(-1) ?? "", /context usage is unknown/);
+  assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, "Router auto: OpenRouter");
+});
+
+test("a partial model switch that fails to set thinking level revokes auto and warns", async () => {
+  const h = harness({ failThinking: true });
+  await h.command("model-router-auto", "on");
+  await h.run("one");
+  assert.equal(h.switches(), 1);
+  assert.deepEqual(h.model(), { provider: "test", id: "cheap" });
+  assert.match(h.notices.at(-1) ?? "", /failed during model switching; inspect Pi's active model and thinking level/);
+  assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, undefined);
+  await h.run("two");
+  assert.equal(h.switches(), 1);
+  assert.doesNotMatch(JSON.stringify(h.notices), /PRIVATE_/);
+});
+
+test("a hung credential lookup times out, fails closed, and ignores late results", async () => {
+  let finish: ((backend: JudgmentBackend) => void) | undefined;
+  let count = 0;
+  const provider = { async judge(): Promise<never> { assert.fail("late resolution must not send"); } };
+  const h = harness({ routingTimeoutMs: 30, resolveBackend: async () => {
+    if (++count === 1) return { recipient: "OpenRouter", provider };
+    return new Promise<JudgmentBackend>(done => { finish = done; });
+  } });
+  await h.command("model-router-auto", "on");
+  await h.run("PRIVATE_HUNG_LOOKUP");
+  assert.match(h.notices.at(-1) ?? "", /timed out; current model unchanged/);
+  assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, undefined);
+  assert.ok(finish);
+  finish({ recipient: "OpenRouter", provider });
+  await Promise.resolve();
+  await h.run("PRIVATE_AFTER_TIMEOUT");
+  assert.equal(count, 2);
+  assert.equal(h.switches(), 0);
+  assert.doesNotMatch(JSON.stringify(h.notices), /PRIVATE_/);
+});
+
+test("a hung Jev assessment is aborted by the deadline and never switches", async () => {
+  let aborted = false;
+  const h = harness({ routingTimeoutMs: 30, provider: { async judge(_request, opts): Promise<never> {
+    return new Promise<never>((_resolve, reject) => opts?.signal?.addEventListener("abort", () => {
+      aborted = true;
+      reject(new Error("PRIVATE_DEADLINE"));
+    }, { once: true }));
+  } } });
+  await h.command("model-router-auto", "on");
+  await h.run("PRIVATE_SLOW_JEV");
+  assert.equal(aborted, true);
+  assert.equal(h.switches(), 0);
+  assert.match(h.notices.at(-1) ?? "", /timed out; current model unchanged/);
+  assert.doesNotMatch(JSON.stringify(h.notices), /PRIVATE_/);
+});
+
+test("timeout during a non-abortable model switch warns and does not set thinking level later", async () => {
+  let finish: ((result: boolean) => void) | undefined;
+  const h = harness({ routingTimeoutMs: 30, switchModel: () => new Promise<boolean>(done => { finish = done; }) });
+  await h.command("model-router-auto", "on");
+  await h.run("PRIVATE_SWITCH");
+  assert.ok(finish);
+  assert.match(h.notices.at(-1) ?? "", /timed out during model switching; the switch may still complete/);
+  assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, undefined);
+  finish(true);
+  await new Promise<void>(done => setImmediate(done));
+  assert.deepEqual(h.model(), { provider: "test", id: "cheap" });
+  assert.equal(h.level(), "off");
+  assert.doesNotMatch(JSON.stringify(h.notices), /PRIVATE_/);
+});
+
+test("off during a pending Pi model switch returns promptly; a late switch cannot set thinking", async () => {
+  let finish: ((result: boolean) => void) | undefined;
+  const h = harness({ initialLevel: "high", switchModel: () => new Promise<boolean>(done => { finish = done; }) });
+  await h.command("model-router-auto", "on");
+  const pending = h.run("PRIVATE_SWITCH_OFF");
+  await new Promise<void>(done => setImmediate(done));
+  assert.ok(finish);
+  await h.command("model-router-auto", "off");
+  await pending;
+  finish(true);
+  await new Promise<void>(done => setImmediate(done));
+  assert.equal(h.level(), "off"); // Pi's implicit level change is possible; router's explicit call is not.
+  assert.equal(h.thinkingCalls(), 0);
+  assert.equal(h.switches(), 1);
+  assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, undefined);
+  assert.doesNotMatch(JSON.stringify(h.notices), /PRIVATE_/);
 });
 
 test("a one-shot command replaces automatic consent instead of silently resuming it", async () => {

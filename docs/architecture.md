@@ -137,7 +137,7 @@ The Pi adapter owns the host-specific lifecycle and side effects:
 - Resolve selected provider/model IDs and call Pi's model-switching API.
 - Distinguish proposed decisions from successfully applied switches.
 - Present all five judgments and policy-weighted demand in Pi's compact status line (`format-status.ts`) without placing diagnostics into model context.
-- Reset one-shot and session-only automatic consent on session/branch transitions; abort in-flight assessments on revocation. Pi records model and thinking-level changes as session state.
+- Reset one-shot and session-only automatic consent on session/branch transitions and manual model/thinking changes; abort in-flight assessments on revocation. Bound each per-prompt routing attempt to 15 seconds. Pi records model and thinking-level changes as session state.
 
 Only this adapter and the outer entry/wiring modules may reference Pi APIs. The core must never receive an `ExtensionContext`, session manager, or Pi model object.
 
@@ -207,17 +207,17 @@ Pi before_agent_start (one-shot or confirmed session-scoped route consent)
   -> report actual outcome
 ```
 
-Selecting a candidate and successfully switching to it are separate events. A failed switch must not be reported as a successful route.
+Selecting a candidate and successfully switching to it are separate events. A failed or partial switch must not be reported as a successful route. Once Pi begins switching, a timeout or revocation cannot guarantee rollback; issue a sanitized warning to inspect both the model and thinking level.
 
 ## Failure behavior
 
 | Condition | Intended behavior |
 | --- | --- |
 | No one-shot or session-scoped consent | No assessment, file access, or model selection. |
-| Jev timeout or service failure | Leave the current model unchanged; never fabricate a low-complexity judgment. |
+| Credential/candidate/Jev timeout before switching | Continue the prompt with the current model; revoke automatic consent and never fabricate a judgment. |
 | Missing critical evidence / unclear category | Leave the current model unchanged. |
 | No eligible candidate | Return a distinct outcome; never silently relax hard constraints. |
-| Pi rejects a switch | Report the failure and actual model state; any retry candidate must also be eligible. |
+| Pi rejects or only partially applies a switch | Revoke automatic consent and warn to inspect the active model and thinking level; do not assume rollback. |
 | Cancelled or stale assessment | Discard the result and do not switch models. |
 
 Fallback ordering and missing-evidence threshold are explicit in config/policy. Pi continues with the current model when selection is not possible. Automatic routing requires an explicit, in-memory, recipient-locked session opt-in and keeps the current model on per-prompt skips. Pinning manual overrides and empirically calibrated policies remain future work.

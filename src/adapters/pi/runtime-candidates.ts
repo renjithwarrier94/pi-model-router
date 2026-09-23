@@ -10,8 +10,9 @@ export interface RuntimeCandidate {
 
 /** Fail closed on missing capacity/auth information. This is a conservative capacity estimate, not tokenization. */
 export async function getRuntimeCandidates(
-  options: readonly ModelOption[], ctx: ExtensionContext, event: BeforeAgentStartEvent,
+  options: readonly ModelOption[], ctx: ExtensionContext, event: BeforeAgentStartEvent, signal?: AbortSignal,
 ): Promise<RuntimeCandidate[]> {
+  if (signal?.aborted || ctx.signal?.aborted) return [];
   const usage = ctx.getContextUsage();
   if (usage?.tokens === null || usage?.tokens === undefined) return [];
   const projection = ctx.sessionManager.buildSessionProjection();
@@ -30,7 +31,7 @@ export async function getRuntimeCandidates(
   const available = ctx.modelRegistry.getAvailable();
   const candidates: RuntimeCandidate[] = [];
   for (const option of options) {
-    if (ctx.signal?.aborted) break;
+    if (signal?.aborted || ctx.signal?.aborted) break;
     const model = available.find(model => model.provider === option.provider && model.id === option.model);
     if (!model || !model.input.includes("text")) continue;
     // We cannot verify a serialized-request byte cap before Pi constructs its payload.
@@ -48,6 +49,7 @@ export async function getRuntimeCandidates(
     try {
       // `getAvailable()` checks configured auth; this check resolves credentials at request time.
       const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+      if (signal?.aborted || ctx.signal?.aborted) break;
       if (auth.ok) candidates.push({ option, model });
     } catch {
       // A failing credential command never makes a model eligible.

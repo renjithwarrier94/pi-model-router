@@ -14,37 +14,57 @@ import { formatAssessmentStatus, ROUTER_AUTO_STATUS_KEY, ROUTER_STATUS_KEY } fro
 
 export interface RoutingAdapters {
   readonly loadConfig: (ctx: ExtensionContext) => Promise<ModelRouterConfig>;
-  readonly candidates: (ctx: ExtensionContext, event: BeforeAgentStartEvent, config: ModelRouterConfig) => Promise<RuntimeCandidate[]>;
+  readonly candidates: (ctx: ExtensionContext, event: BeforeAgentStartEvent, config: ModelRouterConfig, signal?: AbortSignal) => Promise<RuntimeCandidate[]>;
 }
 
 const defaultRoutingAdapters: RoutingAdapters = {
   loadConfig: ctx => loadModelRouterConfig(ctx.cwd, ctx.isProjectTrusted()),
-  candidates: (ctx, event, config) => getRuntimeCandidates(config.options ?? [], ctx, event),
+  candidates: (ctx, event, config, signal) => getRuntimeCandidates(config.options ?? [], ctx, event, signal),
 };
 
 /** Provider and host adapters may be supplied for hook tests; production uses Pi and TypeSafe. */
 export function createAssessmentExtension(
   resolveBackend: (ctx: ExtensionContext) => Promise<JudgmentBackend> = resolveJudgmentBackend,
   routing: RoutingAdapters = defaultRoutingAdapters,
+  options: { readonly routingTimeoutMs?: number } = {},
 ): (pi: ExtensionAPI) => void {
+  const routingTimeoutMs = options.routingTimeoutMs ?? 15_000;
+  if (!Number.isSafeInteger(routingTimeoutMs) || routingTimeoutMs <= 0) throw new Error("Invalid routing deadline.");
   return (pi) => {
     let next: { intent: "assess" | "route"; recipient: JudgmentBackend["recipient"] } | null = null;
     let automatic: { recipient: JudgmentBackend["recipient"]; sessionId: string | undefined } | null = null;
-    let activeAssessment: AbortController | null = null;
+    let activeRun: AbortController | null = null;
+    let routerSwitch: { provider: string; id: string } | null = null;
+    let lastRouted: { provider: string; id: string; level: string } | null = null;
     let generation = 0;
 
     const reset = (ctx: ExtensionContext) => {
       generation += 1;
       next = null;
       automatic = null;
-      activeAssessment?.abort();
-      activeAssessment = null;
+      lastRouted = null;
+      activeRun?.abort();
+      activeRun = null;
       setAutoStatus(ctx);
       setStatus(ctx);
     };
     pi.on("session_start", (_event, ctx) => reset(ctx));
     pi.on("session_shutdown", (_event, ctx) => reset(ctx));
     pi.on("session_tree", (_event, ctx) => reset(ctx));
+    pi.on("model_select", (event, ctx) => {
+      if (!automatic || (event.source === "set" && routerSwitch &&
+          event.model.provider === routerSwitch.provider && event.model.id === routerSwitch.id)) return;
+      const inFlight = routerSwitch !== null;
+      reset(ctx);
+      notify(ctx, inFlight
+        ? "Automatic routing stopped: manual model change during a router switch. Inspect Pi's active model; the pending switch may still complete."
+        : "Automatic routing stopped: model changed outside the router. Enable it again to resume.", inFlight ? "warning" : "info");
+    });
+    pi.on("thinking_level_select", (_event, ctx) => {
+      if (!automatic || routerSwitch) return;
+      reset(ctx);
+      notify(ctx, "Automatic routing stopped: thinking level changed outside the router. Enable it again to resume.", "info");
+    });
 
     pi.registerCommand("model-router-assess", {
       description: "Consent to assess the next prompt with Jev (sends selected unredacted conversation via OpenRouter or TypeSafe); or cancel with off",
@@ -145,6 +165,7 @@ export function createAssessmentExtension(
             }
             if (!confirmed || generation !== run || ctx.sessionManager.getSessionId() !== sessionId || !ctx.isProjectTrusted()) return;
             automatic = { recipient: backend.recipient, sessionId };
+            lastRouted = ctx.model ? { provider: ctx.model.provider, id: ctx.model.id, level: pi.getThinkingLevel() } : null;
             setAutoStatus(ctx, backend.recipient);
             notify(ctx, `Automatic routing enabled for this session via ${backend.recipient}. Unredacted context may be sent on future prompts; /model-router-auto off revokes consent.`, "warning");
             break;
@@ -167,15 +188,47 @@ export function createAssessmentExtension(
         notify(ctx, "Automatic routing stopped: session or project trust changed. Current model unchanged.", "warning");
         return;
       }
+      if (automatic && lastRouted && (ctx.model?.provider !== lastRouted.provider ||
+          ctx.model?.id !== lastRouted.id || pi.getThinkingLevel() !== lastRouted.level)) {
+        reset(ctx);
+        notify(ctx, "Automatic routing stopped: model or thinking level changed outside the router.", "info");
+        return;
+      }
       const intent = pending.intent;
       next = null; // Consume one-shot permission before any asynchronous operation or error.
-      activeAssessment?.abort(); // A newer prompt invalidates an older pending assessment.
-      activeAssessment = null;
+      activeRun?.abort(); // A newer prompt invalidates an older pending assessment.
+      const runController = new AbortController();
+      activeRun = runController;
       const run = ++generation;
       const sessionId = ctx.sessionManager.getSessionId();
       const leafId = ctx.sessionManager.getLeafId();
+      const turnSignal = ctx.signal;
+      const abortWithTurn = () => runController.abort();
+      turnSignal?.addEventListener("abort", abortWithTurn, { once: true });
+      if (turnSignal?.aborted) runController.abort();
+      let deadlineExpired = false;
+      let switchStarted = false;
+      let switchMarker: { provider: string; id: string } | null = null;
+      const timer = setTimeout(() => { deadlineExpired = true; runController.abort(); }, routingTimeoutMs);
+      // Race non-abortable host operations too; their late result cannot switch a model.
+      const wait = <T>(start: () => Promise<T>): Promise<T> => {
+        if (runController.signal.aborted) return Promise.reject(new Error("Routing interrupted."));
+        return new Promise<T>((resolve, reject) => {
+          const aborted = () => reject(new Error("Routing interrupted."));
+          runController.signal.addEventListener("abort", aborted, { once: true });
+          try {
+            start().then(
+              value => { runController.signal.removeEventListener("abort", aborted); resolve(value); },
+              error => { runController.signal.removeEventListener("abort", aborted); reject(error); },
+            );
+          } catch (error) {
+            runController.signal.removeEventListener("abort", aborted);
+            reject(error);
+          }
+        });
+      };
       const isCurrent = () => {
-        if (generation !== run || ctx.signal?.aborted || ctx.sessionManager.getSessionId() !== sessionId ||
+        if (generation !== run || runController.signal.aborted || ctx.sessionManager.getSessionId() !== sessionId ||
             ctx.sessionManager.getLeafId() !== leafId) return false;
         if (automatic && !ctx.isProjectTrusted()) {
           reset(ctx);
@@ -184,12 +237,11 @@ export function createAssessmentExtension(
         }
         return true;
       };
-      if (!isCurrent()) return;
-      setStatus(ctx);
-
       try {
+        if (!isCurrent()) return;
+        setStatus(ctx);
         // Re-resolve before reading context; credentials may have changed since consent.
-        const backend = await resolveBackend(ctx);
+        const backend = await wait(() => resolveBackend(ctx));
         if (!isCurrent()) return;
         if (backend.recipient !== pending.recipient) {
           if (automatic) reset(ctx);
@@ -199,17 +251,21 @@ export function createAssessmentExtension(
         let candidates: RuntimeCandidate[] = [];
         let config: ModelRouterConfig | undefined;
         if (intent === "route") {
-          config = await routing.loadConfig(ctx);
+          const routeConfig = await wait(() => routing.loadConfig(ctx));
+          config = routeConfig;
           if (!isCurrent()) return;
-          if (!config.policy || !config.options?.length) {
+          if (!routeConfig.policy || !routeConfig.options?.length) {
             if (automatic) reset(ctx);
             notify(ctx, "Model-router route skipped: configure both policy and options. Current model unchanged.", "warning");
             return;
           }
-          candidates = await routing.candidates(ctx, event, config);
+          candidates = await wait(() => routing.candidates(ctx, event, routeConfig, runController.signal));
           if (!isCurrent()) return;
           if (candidates.length === 0) {
-            notify(ctx, "Model-router route skipped: no runtime-eligible models. Current model unchanged.", "warning");
+            const unknownUsage = ctx.getContextUsage()?.tokens == null;
+            notify(ctx, unknownUsage
+              ? "Model-router route skipped: Pi context usage is unknown (for example, after compaction). Current model unchanged."
+              : "Model-router route skipped: no runtime-eligible models. Current model unchanged.", "warning");
             return;
           }
         }
@@ -220,25 +276,15 @@ export function createAssessmentExtension(
           notify(ctx, "Model-router assessment skipped: current request exceeds context limits. Current model unchanged.", "warning");
           return;
         }
-        const controller = new AbortController();
-        activeAssessment = controller;
-        const turnSignal = ctx.signal;
-        const abortWithTurn = () => controller.abort();
-        turnSignal?.addEventListener("abort", abortWithTurn, { once: true });
-        if (turnSignal?.aborted) controller.abort();
-        let assessment: TaskAssessment;
-        try {
-          assessment = await assessTask(prepared.context, backend.provider, { signal: controller.signal });
-        } finally {
-          turnSignal?.removeEventListener("abort", abortWithTurn);
-          if (activeAssessment === controller) activeAssessment = null;
-        }
+        const assessment: TaskAssessment = await wait(() =>
+          assessTask(prepared.context, backend.provider, { signal: runController.signal }));
         if (!isCurrent()) return;
         // Assessment-only tolerates absent/invalid routing configuration: no policy means no weighted score.
         if (intent === "assess") {
           try {
-            config = await routing.loadConfig(ctx);
+            config = await wait(() => routing.loadConfig(ctx));
           } catch {
+            if (runController.signal.aborted) throw new Error("Routing interrupted.");
             // The five judgments are still useful without a configured routing policy.
           }
           if (!isCurrent()) return;
@@ -255,9 +301,12 @@ export function createAssessmentExtension(
         }
         const selected = candidates.find(c => c.option.id === decision.option.id)!;
         if (!isCurrent()) return;
-        const success = await pi.setModel(selected.model);
+        switchStarted = true;
+        switchMarker = { provider: selected.model.provider, id: selected.model.id };
+        routerSwitch = switchMarker;
+        const success = await wait(() => pi.setModel(selected.model));
         // setModel itself appends a session entry and changes the leaf ID.
-        if (generation !== run || ctx.signal?.aborted || ctx.sessionManager.getSessionId() !== sessionId) return;
+        if (generation !== run || runController.signal.aborted || ctx.sessionManager.getSessionId() !== sessionId) return;
         if (!success) {
           if (automatic) reset(ctx);
           notify(ctx, "Model-router route failed: selected model unavailable. Current model unchanged.", "warning");
@@ -270,17 +319,31 @@ export function createAssessmentExtension(
           notify(ctx, "Model-router route could not confirm model/thinking level; inspect the current Pi model.", "warning");
           return;
         }
+        if (automatic) lastRouted = { provider: selected.model.provider, id: selected.model.id, level: selected.option.thinkingLevel };
         if (decision.status === "threshold-unmet") {
           notify(ctx, `Model-router threshold unmet by ${decision.shortfall.toFixed(2)} points; fallback applied.`, "warning");
         }
       } catch {
         // No error messages/causes: projection and remote errors can contain prompt text.
-        if (isCurrent()) {
+        if (generation === run && deadlineExpired && ctx.sessionManager.getSessionId() === sessionId) {
+          if (automatic) reset(ctx);
+          notify(ctx, switchStarted
+            ? "Model-router timed out during model switching; the switch may still complete. Inspect Pi's active model."
+            : "Model-router timed out; current model unchanged. Automatic consent, if enabled, was revoked.", "warning");
+        } else if ((switchStarted && generation === run && !runController.signal.aborted &&
+                    ctx.sessionManager.getSessionId() === sessionId) || isCurrent()) {
           if (automatic) reset(ctx); // Re-consent before retrying after an unexpected automatic failure.
-          notify(ctx, intent === "route"
-            ? "Model-router route failed; inspect the current Pi model before proceeding."
-            : "Model-router assessment failed; current model unchanged.", "warning");
+          notify(ctx, switchStarted
+            ? "Model-router route failed during model switching; inspect Pi's active model and thinking level."
+            : intent === "route"
+              ? "Model-router route failed; current model unchanged."
+              : "Model-router assessment failed; current model unchanged.", "warning");
         }
+      } finally {
+        clearTimeout(timer);
+        turnSignal?.removeEventListener("abort", abortWithTurn);
+        if (activeRun === runController) activeRun = null;
+        if (routerSwitch === switchMarker) routerSwitch = null;
       }
     });
   };
