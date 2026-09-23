@@ -50,6 +50,6 @@ Only omissions from the supplied snapshot are observable. Messages filtered out 
 - Counts cover the rendered context only, not Jev questions, SDK wrapping, or output tokens. Those need separate request-level headroom later.
 - This step selects and bounds evidence; it does **not redact secrets**. Selected text remains unredacted. A privacy/transmission policy is still required before external calls.
 - Labels are not a security boundary. The future Jev questions must treat supplied conversation as evidence, not instructions, even when it contains role-like labels or adversarial text.
-- No Jev questions, network calls, model-selection logic, or Pi lifecycle wiring are implemented here.
+- This operation has no network calls, model-selection logic, or Pi lifecycle wiring. [Task assessment questions](task-assessment.md) and a port-based assessment operation exist separately, but are not wired to send prepared context until transmission privacy is addressed.
 
 `tests/unit/application/prepare-context.test.ts` covers exact budget boundaries, one-time allowance, contiguous selection, chronological order, oversize behavior, omission/image metadata, message caps, invalid policies, and frozen input.

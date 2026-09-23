@@ -2,9 +2,9 @@
 
 ## Status and scope
 
-This document describes the intended architecture of a model-routing extension for the Pi coding agent. Implemented pieces include SDK-independent judgment and conversation snapshot models, the `JudgmentProvider` port and error type, the TypeSafe adapter with runtime validation, the Pi context mapper, model-option types with strict configuration validation, and bounded context preparation. Minimal npm tooling, compile-time contract tests, mocked-transport tests, and in-memory Pi mapping tests are included. Routing logic and Pi lifecycle wiring remain deferred. See [TypeSafe adapter](typesafe-adapter.md) and [Pi context mapping](pi-context.md) for details.
+This document describes the intended architecture of a model-routing extension for the Pi coding agent. Implemented pieces include SDK-independent judgment and conversation snapshot models, the `JudgmentProvider` port and error type, the TypeSafe adapter with runtime validation, the Pi context mapper, model-option types with strict configuration validation, bounded context preparation, and the five-question task assessment operation. Minimal npm tooling, compile-time contract tests, mocked-transport tests, and in-memory Pi mapping tests are included. Routing logic and Pi lifecycle wiring remain deferred. See [TypeSafe adapter](typesafe-adapter.md) and [Pi context mapping](pi-context.md) for details.
 
-Empty directories contain `.gitkeep` placeholders. Except for the judgment/snapshot models, judgment port, TypeSafe adapter, Pi context mapper, configuration schema/model-option types, and context preparation, the filenames below are planned responsibilities, not existing implementations or a requirement to create every module immediately.
+Empty directories contain `.gitkeep` placeholders. Except for the judgment/snapshot models, judgment port, TypeSafe adapter, Pi context mapper, configuration schema/model-option types, context preparation, and task assessment, the filenames below are planned responsibilities, not existing implementations or a requirement to create every module immediately.
 
 ## Goal
 
@@ -157,7 +157,7 @@ Application-owned models support Choice, Score, and Noul questions sharing JSON-
 
 The adapter must validate requests and responses at runtime and reject incomplete or invalid results with `JudgmentProviderError`. Static types alone do not enforce probability ranges, distribution sums, or JSON serializability. No SDK types cross the boundary.
 
-Routing-specific questions and answer-to-assessment mapping belong in the application, not the provider adapter. This replaces the originally proposed `ContextAssessor` port; no second port is needed yet.
+Routing-specific questions and raw answer-to-assessment mapping are implemented in `assess-task.ts` and `models/task-assessment.ts`, not the provider adapter. All five independent questions share one approved context and one provider call. This replaces the originally proposed `ContextAssessor` port; no second port is needed yet. Context selection is not redaction: caller-approved transmission policy is required before wiring an actual Jev call. See [Task assessment](task-assessment.md).
 
 Configuration and candidate models are passed into the use case as values initially. Add additional ports only when an actual use case needs an external operation; do not introduce generic repositories or services preemptively.
 
@@ -198,11 +198,13 @@ Do not infer that every model-selection event is a manual user override. Disting
 
 `jev-judgment-provider.ts` implements `JudgmentProvider`. It owns client construction, configuration, cancellation, and sanitized error normalization. `map-judgment.ts` owns SDK request/response mapping and runtime validation. Neither module owns routing questions or model selection. A separate client-construction module is unnecessary at this stage.
 
-The application defines questions and maps judgments into domain assessment dimensions, initially:
+The application defines the implemented v1 question set:
 
-- **Choice** for primary task category.
-- **Score** for complexity or reasoning demand.
-- Other narrow judgments only when they materially change routing.
+- **Choice** for primary next-deliverable category, including `other` and `unclear`.
+- Three independently anchored **Scores** for reasoning demand, dependency scope, and context integration demand.
+- **Noul** for missing critical evidence (P(yes) indicates insufficient evidence, not greater difficulty).
+
+The operation returns raw distributions and confidence for later deterministic policy; it does not yet select a model.
 
 Ask independent questions over the same state together. Do not ask Jev to infer facts already available in code, such as model authentication, input support, or known context capacity.
 
