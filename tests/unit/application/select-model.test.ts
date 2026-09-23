@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { ModelOption } from "../../../src/domain/model-option.js";
 import type { RoutingPolicy } from "../../../src/domain/routing-policy.js";
 import type { TaskAssessment } from "../../../src/application/models/task-assessment.js";
-import { selectModel } from "../../../src/application/use-cases/select-model.js";
+import { calculateWeightedDifficulty, selectModel } from "../../../src/application/use-cases/select-model.js";
 
 const policy: RoutingPolicy = {
   weights: { reasoningDemand: 0.5, dependencyScope: 0.3, contextIntegrationDemand: 0.2 },
@@ -37,6 +37,13 @@ test("weighted normalized score interpolates curve; cheapest qualified model win
     assert.ok(Math.abs(result.requiredDeepSweScore - 63.9) < 1e-12);
     assert.equal(result.shortfall, 0);
   }
+});
+
+test("status and selection share the same weighted difficulty even when routing is gated", () => {
+  const input = assessment({ missingCriticalEvidence: { type: "noul", probability: 0.9 } });
+  assert.ok(Math.abs(calculateWeightedDifficulty(input, policy) - 0.63) < 1e-12);
+  assert.deepEqual(selectModel(input, [option("candidate", 100, 1)], policy),
+    { status: "unchanged", reason: "critical-evidence" });
 });
 
 test("qualified ties break by score then ID", () => {

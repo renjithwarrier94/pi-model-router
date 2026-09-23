@@ -3,12 +3,13 @@ import type { ModelRouterConfig } from "../config/config-schema.js";
 import { loadModelRouterConfig } from "../config/load-config.js";
 import type { RuntimeCandidate } from "./runtime-candidates.js";
 import { getRuntimeCandidates } from "./runtime-candidates.js";
-import { selectModel } from "../../application/use-cases/select-model.js";
+import { calculateWeightedDifficulty, selectModel } from "../../application/use-cases/select-model.js";
 import { prepareContext } from "../../application/use-cases/prepare-context.js";
 import { assessTask } from "../../application/use-cases/assess-task.js";
 import { resolveJudgmentBackend, type JudgmentBackend } from "./resolve-judgment-provider.js";
 import { JudgmentProviderError } from "../../application/ports/judgment-provider.js";
 import { mapContext } from "./map-context.js";
+import { formatAssessmentStatus, ROUTER_STATUS_KEY } from "./format-status.js";
 
 export interface RoutingAdapters {
   readonly loadConfig: (ctx: ExtensionContext) => Promise<ModelRouterConfig>;
@@ -29,20 +30,21 @@ export function createAssessmentExtension(
     let next: { intent: "assess" | "route"; recipient: JudgmentBackend["recipient"] } | null = null;
     let generation = 0;
 
-    const reset = () => {
+    const reset = (ctx: ExtensionContext) => {
       generation += 1;
       next = null;
+      setStatus(ctx);
     };
-    pi.on("session_start", reset);
-    pi.on("session_shutdown", reset);
-    pi.on("session_tree", reset);
+    pi.on("session_start", (_event, ctx) => reset(ctx));
+    pi.on("session_shutdown", (_event, ctx) => reset(ctx));
+    pi.on("session_tree", (_event, ctx) => reset(ctx));
 
     pi.registerCommand("model-router-assess", {
-      description: "Consent to assess the next prompt with Jev (sends selected unredacted conversation to TypeSafe); or cancel with off",
+      description: "Consent to assess the next prompt with Jev (sends selected unredacted conversation via OpenRouter or TypeSafe); or cancel with off",
       handler: async (args, ctx) => {
         switch (args.trim()) {
           case "once": {
-            reset();
+            reset(ctx);
             const run = generation;
             try {
               const backend = await resolveBackend(ctx);
@@ -55,7 +57,7 @@ export function createAssessmentExtension(
             break;
           }
           case "off":
-            reset();
+            reset(ctx);
             notify(ctx, "Model-router assessment consent cancelled.", "info");
             break;
           default:
@@ -69,7 +71,7 @@ export function createAssessmentExtension(
       handler: async (args, ctx) => {
         switch (args.trim()) {
           case "once": {
-            reset();
+            reset(ctx);
             const run = generation;
             try {
               const backend = await resolveBackend(ctx);
@@ -82,7 +84,7 @@ export function createAssessmentExtension(
             break;
           }
           case "off":
-            reset();
+            reset(ctx);
             notify(ctx, "Model-router route consent cancelled.", "info");
             break;
           default:
@@ -103,6 +105,7 @@ export function createAssessmentExtension(
         && ctx.sessionManager.getSessionId() === sessionId
         && ctx.sessionManager.getLeafId() === leafId;
       if (!isCurrent()) return;
+      setStatus(ctx);
 
       try {
         // Re-resolve before reading context; credentials may have changed since consent.
@@ -137,11 +140,20 @@ export function createAssessmentExtension(
         }
         const assessment = await assessTask(prepared.context, backend.provider, ctx.signal ? { signal: ctx.signal } : undefined);
         if (!isCurrent()) return;
-        // Never put results or raw input into the model-facing transcript.
+        // Assessment-only tolerates absent/invalid routing configuration: no policy means no weighted score.
         if (intent === "assess") {
-          notify(ctx, `Assessment only (model unchanged): ${assessment.workCategory.choice}; reasoning ${assessment.reasoningDemand.score.toFixed(2)}/2; scope ${assessment.dependencyScope.score.toFixed(2)}/2; integration ${assessment.contextIntegrationDemand.score.toFixed(2)}/2; missing critical evidence P(yes) ${assessment.missingCriticalEvidence.probability.toFixed(2)}.`, "info");
-          return;
+          try {
+            config = await routing.loadConfig(ctx);
+          } catch {
+            // The five judgments are still useful without a configured routing policy.
+          }
+          if (!isCurrent()) return;
         }
+        // Never put results or raw input into the model-facing transcript.
+        const weightedDifficulty = config?.policy
+          ? calculateWeightedDifficulty(assessment, config.policy) : undefined;
+        setStatus(ctx, formatAssessmentStatus(assessment, weightedDifficulty));
+        if (intent === "assess") return;
         const decision = selectModel(assessment, candidates.map(c => c.option), config!.policy!);
         if (decision.status === "unchanged") {
           notify(ctx, `Model-router route unchanged (${decision.reason}); no model switched.`, "warning");
@@ -162,9 +174,9 @@ export function createAssessmentExtension(
           notify(ctx, "Model-router route could not confirm model/thinking level; inspect the current Pi model.", "warning");
           return;
         }
-        const shortfall = decision.status === "threshold-unmet"
-          ? `; threshold unmet by ${decision.shortfall.toFixed(2)} points` : "";
-        notify(ctx, `Model-router route (uncalibrated): ${JSON.stringify(selected.option.id)} at ${selected.option.thinkingLevel}; difficulty ${decision.difficulty.toFixed(2)}, required score ${decision.requiredDeepSweScore.toFixed(2)}${shortfall}.`, decision.status === "threshold-unmet" ? "warning" : "info");
+        if (decision.status === "threshold-unmet") {
+          notify(ctx, `Model-router threshold unmet by ${decision.shortfall.toFixed(2)} points; fallback applied.`, "warning");
+        }
       } catch {
         // No error messages/causes: projection and remote errors can contain prompt text.
         if (isCurrent()) notify(ctx, intent === "route"
@@ -179,6 +191,10 @@ function credentialsUnavailable(ctx: ExtensionContext, operation: string): void 
   const message = `${operation} unavailable: configure OpenRouter in Pi, OPENROUTER_API_KEY, or TYPESAFE_API_KEY. No consent granted.`;
   if (!ctx.hasUI) throw new JudgmentProviderError("unauthorized", message);
   notify(ctx, message, "warning");
+}
+
+function setStatus(ctx: ExtensionContext, text?: string): void {
+  if (ctx.hasUI) ctx.ui.setStatus(ROUTER_STATUS_KEY, text);
 }
 
 function notify(ctx: ExtensionContext, message: string, level: "info" | "warning"): void {

@@ -22,15 +22,8 @@ export function selectModel(
     (category !== "other" && option.categories.includes(category as TaskCategory)));
   if (compatible.length === 0) return { status: "unchanged", reason: "no-category-match" };
 
-  const { weights, difficultyToDeepSweScore: points } = policy;
-  const totalWeight = weights.reasoningDemand + weights.dependencyScope + weights.contextIntegrationDemand;
-  const difficulty = (
-    weights.reasoningDemand * (assessment.reasoningDemand.score / 2) +
-    weights.dependencyScope * (assessment.dependencyScope.score / 2) +
-    weights.contextIntegrationDemand * (assessment.contextIntegrationDemand.score / 2)
-  ) / totalWeight;
-  // A validated score is in [0,2]. Clamp only floating-point error at the endpoints.
-  const boundedDifficulty = Math.max(0, Math.min(1, difficulty));
+  const { difficultyToDeepSweScore: points } = policy;
+  const boundedDifficulty = calculateWeightedDifficulty(assessment, policy);
   let requiredDeepSweScore = points[points.length - 1]!.score;
   for (let i = 1; i < points.length; i++) {
     const left = points[i - 1]!;
@@ -54,6 +47,19 @@ export function selectModel(
     status: "threshold-unmet", option, difficulty: boundedDifficulty,
     requiredDeepSweScore, shortfall: Math.max(0, requiredDeepSweScore - option.deepSweScore),
   };
+}
+
+/** Normalized weighted demand (0..1), shared by selection and the diagnostic status line. */
+export function calculateWeightedDifficulty(assessment: TaskAssessment, policy: RoutingPolicy): number {
+  const { weights } = policy;
+  const totalWeight = weights.reasoningDemand + weights.dependencyScope + weights.contextIntegrationDemand;
+  const difficulty = (
+    weights.reasoningDemand * (assessment.reasoningDemand.score / 2) +
+    weights.dependencyScope * (assessment.dependencyScope.score / 2) +
+    weights.contextIntegrationDemand * (assessment.contextIntegrationDemand.score / 2)
+  ) / totalWeight;
+  // A validated score is in [0,2]. Clamp only floating-point error at the endpoints.
+  return Math.max(0, Math.min(1, difficulty));
 }
 
 function idOrder(a: string, b: string): number {

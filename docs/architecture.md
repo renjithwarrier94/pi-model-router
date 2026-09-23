@@ -56,6 +56,7 @@ src/
   adapters/
     pi/
       assessment-extension.ts
+      format-status.ts
       resolve-judgment-provider.ts
       map-context.ts
       runtime-candidates.ts
@@ -135,7 +136,7 @@ The Pi adapter owns the host-specific lifecycle and side effects:
 - Intersect configured candidates with available models and applicable session scoping.
 - Resolve selected provider/model IDs and call Pi's model-switching API.
 - Distinguish proposed decisions from successfully applied switches.
-- Present routing status without placing diagnostic messages into model context unnecessarily.
+- Present all five judgments and policy-weighted demand in Pi's compact status line (`format-status.ts`) without placing diagnostics into model context.
 - Reset pending one-shot consent on session/branch transitions; Pi records model and thinking-level changes as session state.
 
 Only this adapter and the outer entry/wiring modules may reference Pi APIs. The core must never receive an `ExtensionContext`, session manager, or Pi model object.

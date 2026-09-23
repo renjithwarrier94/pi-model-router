@@ -7,7 +7,7 @@ import {
   type BeforeAgentStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import type { JudgmentProvider } from "../../../src/application/ports/judgment-provider.js";
-import { createAssessmentExtension } from "../../../src/adapters/pi/assessment-extension.js";
+import { createAssessmentExtension, type RoutingAdapters } from "../../../src/adapters/pi/assessment-extension.js";
 import type { JudgmentBackend } from "../../../src/adapters/pi/resolve-judgment-provider.js";
 
 const answers = {
@@ -21,15 +21,19 @@ const answers = {
   missingCriticalEvidence: { type: "noul", probability: 0.4 },
 };
 
-function harness(provider: JudgmentProvider, hasUI = true, resolve?: () => Promise<JudgmentBackend>) {
+function harness(provider: JudgmentProvider, hasUI = true, resolve?: () => Promise<JudgmentBackend>, config?: RoutingAdapters["loadConfig"]) {
   const handlers = new Map<string, (...params: any[]) => unknown>();
   let command: ((args: string, ctx: ExtensionContext) => Promise<void>) | undefined;
   const notifications: { message: string; level: string }[] = [];
+  const statuses: { key: string; text: string | undefined }[] = [];
   const sessionManager = SessionManager.inMemory();
   const context = {
     sessionManager,
     hasUI,
-    ui: { notify(message: string, level: string) { notifications.push({ message, level }); } },
+    ui: {
+      notify(message: string, level: string) { notifications.push({ message, level }); },
+      setStatus(key: string, text: string | undefined) { statuses.push({ key, text }); },
+    },
     signal: undefined as AbortSignal | undefined,
   } as unknown as ExtensionContext;
   const pi = {
@@ -42,7 +46,10 @@ function harness(provider: JudgmentProvider, hasUI = true, resolve?: () => Promi
     appendEntry() { assert.fail("assessment must not persist prompt or result"); },
     sendMessage() { assert.fail("assessment must not inject text into model context"); },
   } as unknown as ExtensionAPI;
-  createAssessmentExtension(resolve ?? (async () => ({ provider, recipient: "TypeSafe" })))(pi);
+  createAssessmentExtension(resolve ?? (async () => ({ provider, recipient: "TypeSafe" })), {
+    loadConfig: config ?? (async () => ({ version: 1, options: [] })),
+    candidates: async () => [],
+  })(pi);
   const run = async (prompt: string) => handlers.get("before_agent_start")?.({
     type: "before_agent_start", prompt,
   } satisfies Pick<BeforeAgentStartEvent, "type" | "prompt">, context);
@@ -51,7 +58,7 @@ function harness(provider: JudgmentProvider, hasUI = true, resolve?: () => Promi
     await command(args, context);
   };
   const fire = async (event: string) => handlers.get(event)?.({}, context);
-  return { run, invoke, fire, context, sessionManager, notifications };
+  return { run, invoke, fire, context, sessionManager, notifications, statuses };
 }
 
 test("disabled by default and invalid command arguments never send conversation", async () => {
@@ -82,8 +89,30 @@ test("once consents for exactly one next prompt, sends selected history through 
   assert.match(request.context, /PRIVATE_CURRENT/);
   assert.match(request.context, /PRIVATE_HISTORY/);
   assert.equal(Object.keys(request.questions).length, 5);
-  assert.ok(h.notifications.some(n => n.message.includes("reasoning 1.25/2")));
-  assert.ok(h.notifications.some(n => n.message.includes("missing critical evidence P(yes) 0.40")));
+  assert.deepEqual(h.statuses.at(-1), { key: "model-router", text: "Router: implement R1.25 S1.00 I0.00 M40% W–" });
+  assert.doesNotMatch(JSON.stringify(h.notifications), /PRIVATE_/);
+});
+
+test("assessment-only displays policy-weighted score when configured", async () => {
+  const h = harness({ async judge() { return { answers } as never; } }, true, undefined,
+    async () => ({ version: 1, options: [], policy: {
+      weights: { reasoningDemand: 2, dependencyScope: 1, contextIntegrationDemand: 1 },
+      difficultyToDeepSweScore: [{ difficulty: 0, score: 40 }, { difficulty: 1, score: 80 }],
+      maxMissingCriticalEvidenceProbability: 0.7,
+    } }));
+  await h.invoke("once");
+  await h.run("prompt");
+  assert.equal(h.statuses.at(-1)?.text, "Router: implement R1.25 S1.00 I0.00 M40% W0.44");
+});
+
+test("assessment stays visible without policy even if config cannot load, and clears on session changes", async () => {
+  const h = harness({ async judge() { return { answers } as never; } }, true, undefined,
+    async () => { throw Error("PRIVATE_CONFIG"); });
+  await h.invoke("once");
+  await h.run("prompt");
+  assert.equal(h.statuses.at(-1)?.text, "Router: implement R1.25 S1.00 I0.00 M40% W–");
+  await h.fire("session_tree");
+  assert.deepEqual(h.statuses.at(-1), { key: "model-router", text: undefined });
   assert.doesNotMatch(JSON.stringify(h.notifications), /PRIVATE_/);
 });
 
@@ -128,6 +157,7 @@ test("stale asynchronous answers are ignored after off or session replacement", 
   finish({ answers });
   await pending;
   assert.ok(!h.notifications.some(n => n.message.includes("reasoning")));
+  assert.ok(!h.statuses.some(s => s.text?.includes("R1.25")));
 });
 
 test("missing credentials fail at once and never grant consent", async () => {
@@ -200,4 +230,5 @@ test("no UI can still assess without logging or injecting data", async () => {
   await h.run("prompt");
   assert.equal(calls, 1);
   assert.deepEqual(h.notifications, []);
+  assert.deepEqual(h.statuses, []);
 });

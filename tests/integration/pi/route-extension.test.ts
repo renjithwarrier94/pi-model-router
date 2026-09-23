@@ -26,6 +26,7 @@ function runHarness(overrides: {
   const handlers = new Map<string, (...args: any[]) => unknown>();
   const commands = new Map<string, (arg: string, ctx: ExtensionContext) => Promise<void>>();
   const notifications: string[] = [];
+  const statuses: { key: string; text: string | undefined }[] = [];
   const switched: unknown[] = [];
   const levels: string[] = [];
   const sessionManager = SessionManager.inMemory();
@@ -34,7 +35,10 @@ function runHarness(overrides: {
   const ctx = {
     hasUI: true, signal: undefined, sessionManager,
     get model() { return activeModel; },
-    ui: { notify: (message: string) => notifications.push(message) },
+    ui: {
+      notify: (message: string) => notifications.push(message),
+      setStatus: (key: string, text: string | undefined) => { statuses.push({ key, text }); },
+    },
   } as unknown as ExtensionContext;
   let calls = 0;
   const provider = overrides.provider ?? {
@@ -74,7 +78,7 @@ function runHarness(overrides: {
   } as unknown as ExtensionAPI;
   createAssessmentExtension(overrides.resolveBackend ?? (async () => ({ provider, recipient: "TypeSafe" })), routing)(pi);
   return {
-    ctx, notifications, switched, levels, calls: () => calls,
+    ctx, notifications, statuses, switched, levels, calls: () => calls,
     async command(name: string, arg: string) { await commands.get(name)?.(arg, ctx); },
     async run(prompt: string) { await handlers.get("before_agent_start")?.({ type: "before_agent_start", prompt }, ctx); },
     async event(name: string) { await handlers.get(name)?.({}, ctx); },
@@ -95,7 +99,9 @@ test("route once selects a model and configured thinking level, while assessment
   assert.deepEqual(h.levels, ["high"]);
   await h.run("no second permission");
   assert.equal(h.calls(), 2);
-  assert.ok(h.notifications.some(n => n.includes("difficulty 0.50, required score 60.00")));
+  assert.deepEqual(h.statuses.at(-1), { key: "model-router", text: "Router: implement R1.00 S1.00 I1.00 M20% W0.50" });
+  assert.ok(!h.notifications.some(n => n.includes("cheapest")));
+  assert.doesNotMatch(JSON.stringify(h.statuses), /PRIVATE_NEXT_PROMPT/);
   assert.doesNotMatch(JSON.stringify(h.notifications), /PRIVATE_NEXT_PROMPT/);
 });
 
@@ -123,6 +129,7 @@ test("threshold-unmet fallback selects highest-scoring compatible option with di
   await h.run("prompt");
   assert.deepEqual(h.switched, [{ provider: "provider", id: "cheapest" }]);
   assert.ok(h.notifications.at(-1)?.includes("threshold unmet by 25.00"));
+  assert.equal(h.statuses.at(-1)?.text, "Router: implement R1.00 S1.00 I1.00 M20% W0.50");
 });
 
 test("no category match, high missing evidence or failed model switch leave thinking level unchanged", async () => {
@@ -132,6 +139,7 @@ test("no category match, high missing evidence or failed model switch leave thin
   await h.run("prompt");
   assert.equal(h.switched.length, 0);
   assert.ok(h.notifications.at(-1)?.includes("no-category-match"));
+  assert.equal(h.statuses.at(-1)?.text, "Router: implement R1.00 S1.00 I1.00 M20% W0.50");
   const failed = runHarness({ switchModel: async () => false });
   await failed.command("model-router-route", "once");
   await failed.run("prompt");
