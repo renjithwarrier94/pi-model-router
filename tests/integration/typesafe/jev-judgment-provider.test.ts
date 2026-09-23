@@ -52,6 +52,20 @@ test("maps all question types through the real SDK and normalizes answers", asyn
   assert.deepEqual(result.answers.inspect, { type: "noul", probability: 0.9 });
 });
 
+test("accepts a small score/probability rounding mismatch observed from live Jev", async () => {
+  const body = response();
+  body.answers.complexity.score = 0.71; // Distribution's visible expectation remains 0.70.
+  const result = await provider(body).judge(request);
+  assert.equal(result.answers.complexity.score, 0.71);
+  assert.deepEqual(result.answers.complexity.probabilities, [0.3, 0.7]);
+});
+
+test("rejects a score discrepancy beyond Jev's centesimal rounding allowance", async () => {
+  const body = response();
+  body.answers.complexity.score = 0.73;
+  await assert.rejects(provider(body).judge(request), errorCode("invalid-response"));
+});
+
 test("OpenRouter System One uses the supported SDK endpoint, key, and bare Jev model", async () => {
   const adapter = new JevJudgmentProvider({
     apiKey: "PRIVATE_OPENROUTER_KEY", baseURL: "https://openrouter.ai/api", defaultModel: "jev-1.13",

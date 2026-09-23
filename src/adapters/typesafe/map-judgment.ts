@@ -3,6 +3,9 @@ import type { JudgmentRequest, JudgmentResponse, QuestionSet } from "../../appli
 import { JudgmentProviderError } from "../../application/ports/judgment-provider.js";
 
 const TOLERANCE = 1e-6;
+// Live Jev may round each score probability to 0.01 while computing its score
+// from finer precision; with three levels, their expectations can differ by ~0.02.
+const SCORE_ROUNDING_TOLERANCE = 0.02 + TOLERANCE;
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
@@ -121,7 +124,7 @@ export function mapResponse<Q extends QuestionSet>(raw: unknown, questions: Ques
         const values = distribution(answer.probabilities, keys);
         const expected = values.reduce((sum, p, index) => sum + p * index, 0);
         requireValid(typeof answer.score === "number" && Number.isFinite(answer.score) &&
-          answer.score >= 0 && answer.score <= keys.length - 1 && Math.abs(answer.score - expected) <= TOLERANCE, true);
+          answer.score >= 0 && answer.score <= keys.length - 1 && Math.abs(answer.score - expected) <= SCORE_ROUNDING_TOLERANCE, true);
         answers[id] = { type: "score", score: answer.score, probabilities: values, confidence: probability(answer.confidence) };
         break;
       }

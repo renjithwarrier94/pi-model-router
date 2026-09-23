@@ -40,7 +40,7 @@ SDK logging is explicitly disabled, including when `TYPESAFE_LOG_LEVEL` is set. 
 - At least one question is required. Choice supports 1–255 options; Score requires 2–10 ordered levels. Instructions and criteria support text or structured JSON descriptions.
 - Choice `options` and Score `levels` map to SDK `criteria`; Noul `yes`/`no` map to `true`/`false`.
 - Responses must contain exactly the requested question IDs and matching answer types.
-- Probabilities and confidence must be finite and in `[0, 1]`. Distribution sums and score expectations use absolute tolerance `1e-6`.
+- Probabilities and confidence must be finite and in `[0, 1]`. Distribution sums use absolute tolerance `1e-6`. The reported Score may differ from its visible distribution's expectation by at most `0.02 + 1e-6`: live Jev has returned a `0.01` score with a rounded `[1, 0, 0]` distribution. This allowance covers centesimal rounding of three probabilities and the score, not arbitrary disagreement.
 - Choice must select a highest-probability supplied option. Score probabilities are returned in input-level order. The input rubric is authoritative; provider legend, usage, and model metadata are not exposed by this port.
 - Noul returns `probability`, without fabricated confidence.
 - Invalid or incomplete responses fail atomically with `invalid-response`.
@@ -55,4 +55,4 @@ npm run typecheck
 npm test
 ```
 
-Tests use the real SDK with a mocked HTTP transport, including the OpenRouter System One URL, bearer key, and bare Jev model ID. No live API calls are made; live model behavior and production numerical precision have not been verified.
+Automated tests use the real SDK with a mocked HTTP transport, including the OpenRouter System One URL, bearer key, and bare Jev model ID; they make no live API calls. One isolated Pi RPC smoke test with synthetic prompts and Pi's OpenRouter credential confirmed five live Jev answers, a status update, and a model switch. This does not establish broader numerical reliability or routing calibration.
