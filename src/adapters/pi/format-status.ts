@@ -1,6 +1,7 @@
 import type { TaskAssessment } from "../../application/models/task-assessment.js";
 
 export const ROUTER_STATUS_KEY = "model-router";
+export const ROUTER_AUTO_STATUS_KEY = "model-router-auto";
 
 /** Compact, single-line summary; W is policy-weighted demand on a 0..1 scale. */
 export function formatAssessmentStatus(assessment: TaskAssessment, weightedDifficulty?: number): string {

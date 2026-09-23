@@ -2,7 +2,7 @@
 
 ## Status
 
-The model types, strict configuration parser, global/project file loader, project-trust checks, runtime eligibility checks, and one-shot route selection are implemented. Automatic routing remains **off by default**. See [Pi assessment and routing](pi-assessment.md). No files under the user's Pi configuration directory are created or modified by this extension.
+The model types, strict configuration parser, global/project file loader, project-trust checks, runtime eligibility checks, and one-shot/session-scoped route selection are implemented. Automatic routing remains **off by default** and needs in-session confirmation. See [Pi assessment and routing](pi-assessment.md). No files under the user's Pi configuration directory are created or modified by this extension.
 
 - `src/domain/model-option.ts`: SDK-independent candidate, category, and thinking-level types.
 - `src/adapters/config/config-schema.ts`: versioned on-disk format and runtime validation.
@@ -15,7 +15,7 @@ The model types, strict configuration parser, global/project file loader, projec
 
 The loader reads global configuration first, then a trusted project's configuration. An explicit project `options` array replaces the entire global array; entries are not merged by ID. Omitted `options` inherits the global list. `options: []` explicitly clears it. A project `policy` replaces the global policy **as a unit**; if omitted, it inherits the global policy, independently of `options`. Every present config file requires `version: 1`. Global location follows Pi's `PI_CODING_AGENT_DIR` environment variable where set.
 
-Routing requires both `policy` and nonempty `options`. Without them it skips and leaves the current model unchanged. Invalid configuration produces a sanitized diagnostic and leaves the model unchanged rather than using a partial list. Untrusted project configuration is never read. Routing is one-shot and only runs after explicit per-prompt consent.
+Routing requires both `policy` and nonempty `options`. Without them it skips and leaves the current model unchanged. Invalid configuration produces a sanitized diagnostic and leaves the model unchanged rather than using a partial list. Untrusted project configuration is never read. Routing runs after explicit one-shot consent or confirmed session-scoped automatic consent; the automatic setting is never read from configuration or persisted.
 
 ## Format
 

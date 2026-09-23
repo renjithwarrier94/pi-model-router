@@ -5,7 +5,7 @@
 ```ts
 const result = prepareContext(snapshot);
 if (result.status === "skipped") {
-  // The one-shot Pi hook retains the current model; it does not call Jev.
+  // The Pi hook retains the current model; it does not call Jev.
   return;
 }
 // result.context is the rendered text for JudgmentRequest.context.
@@ -48,8 +48,8 @@ Only omissions from the supplied snapshot are observable. Messages filtered out 
 
 - At the proposed 0.7 words/token approximation, 5,600 words is about 8K tokens and 6,600 is about 9.4K. **Neither is a hard token guarantee**, especially for code or languages without whitespace-separated words.
 - Counts cover the rendered context only, not Jev questions, SDK wrapping, or output tokens. Those need separate request-level headroom later.
-- This step selects and bounds evidence; it does **not redact secrets**. Selected text remains unredacted. The Pi hook requires explicit per-prompt consent before an external assessment; automatic transmission or broader consent needs a stronger privacy policy.
+- This step selects and bounds evidence; it does **not redact secrets**. Selected text remains unredacted. The Pi hook requires either per-prompt consent or explicit confirmed session-scoped consent before external assessment; no redaction or persistent automatic consent is provided.
 - Labels are not a security boundary. The future Jev questions must treat supplied conversation as evidence, not instructions, even when it contains role-like labels or adversarial text.
-- This operation has no network calls, model-selection logic, or Pi dependencies. The Pi hook sends its output through [task assessment](task-assessment.md) only on explicit one-shot consent. `/model-router-route once` may select and switch a model after that assessment; no unattended routing exists.
+- This operation has no network calls, model-selection logic, or Pi dependencies. The Pi hook sends its output through [task assessment](task-assessment.md) only after one-shot consent or session-scoped auto opt-in. `/model-router-route once` and `/model-router-auto on` may select and switch a model after assessment; automatic mode is off by default.
 
 `tests/unit/application/prepare-context.test.ts` covers exact budget boundaries, one-time allowance, contiguous selection, chronological order, oversize behavior, omission/image metadata, message caps, invalid policies, and frozen input.
