@@ -9,7 +9,7 @@ if (result.status === "skipped") {
   return;
 }
 // result.context is the rendered text for JudgmentRequest.context.
-// Apply the transmission/privacy policy before sending it.
+// Explicit per-prompt consent is required before transmitting unredacted text.
 ```
 
 ## Selection policy
@@ -48,8 +48,8 @@ Only omissions from the supplied snapshot are observable. Messages filtered out 
 
 - At the proposed 0.7 words/token approximation, 5,600 words is about 8K tokens and 6,600 is about 9.4K. **Neither is a hard token guarantee**, especially for code or languages without whitespace-separated words.
 - Counts cover the rendered context only, not Jev questions, SDK wrapping, or output tokens. Those need separate request-level headroom later.
-- This step selects and bounds evidence; it does **not redact secrets**. Selected text remains unredacted. A privacy/transmission policy is still required before external calls.
+- This step selects and bounds evidence; it does **not redact secrets**. Selected text remains unredacted. The Pi hook requires explicit per-prompt consent before an external assessment; automatic transmission or broader consent needs a stronger privacy policy.
 - Labels are not a security boundary. The future Jev questions must treat supplied conversation as evidence, not instructions, even when it contains role-like labels or adversarial text.
-- This operation has no network calls, model-selection logic, or Pi lifecycle wiring. [Task assessment questions](task-assessment.md) and a port-based assessment operation exist separately, but are not wired to send prepared context until transmission privacy is addressed.
+- This operation has no network calls, model-selection logic, or Pi dependencies. The Pi hook now sends its output through the [task assessment](task-assessment.md) operation only on explicit one-shot consent. No automatic model switching exists.
 
 `tests/unit/application/prepare-context.test.ts` covers exact budget boundaries, one-time allowance, contiguous selection, chronological order, oversize behavior, omission/image metadata, message caps, invalid policies, and frozen input.

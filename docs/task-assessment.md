@@ -2,7 +2,7 @@
 
 `src/application/use-cases/assess-task.ts` defines five application-owned questions. `assessTask(context, provider, { signal? })` submits them together through `JudgmentProvider` and returns `TaskAssessment` from `src/application/models/task-assessment.ts`. The TypeSafe adapter translates these definitions to Jev's Choice, Score, and Noul primitives; no SDK types enter the application. The questions share the same context and are independent; none sees another question's answer.
 
-**Scope:** `context` must have been approved for external transmission by the caller. `prepareContext()` selects and bounds text but does **not** redact it. Do not pass its raw output to `assessTask()` until a privacy/transmission policy is implemented. No Pi hook invokes this operation yet; tests use approved literal strings and mocked transport. No credentials or live Jev calls are needed for tests.
+**Scope:** `context` must have been approved for external transmission by the caller. `prepareContext()` selects and bounds text but does **not** redact it. The Pi hook invokes this operation **only after an explicit `/model-router-assess once` command**: this is per-prompt consent to send the selected, unredacted text. Without that command, no assessment or network call occurs. Tests use approved literal strings and mocked transport. No credentials or live Jev calls are needed for tests.
 
 ## Judgments
 
@@ -22,6 +22,6 @@ Score answers retain the probability-weighted **zero-based** index on a 0–2 sc
 
 ## Boundaries and follow-up
 
-`buildTaskAssessmentRequest(context)` creates the complete typed port request. `assessTask()` calls the port once, passes cancellation options through, returns validated answers without flattening distributions, and propagates errors without inventing defaults. The port adapter owns runtime validation. Configured candidates, their availability, category fallback, score aggregation, calibration, and handling of missing evidence belong to later routing policy—not these questions. Establish a privacy/transmission policy and measure question/request tokens before enabling real sends; the existing word budget covers only rendered context, not questions or transport overhead.
+`buildTaskAssessmentRequest(context)` creates the complete typed port request. `assessTask()` calls the port once, passes cancellation options through, returns validated answers without flattening distributions, and propagates errors without inventing defaults. The port adapter owns runtime validation. Configured candidates, their availability, category fallback, score aggregation, calibration, and handling of missing evidence belong to later routing policy—not these questions. Per-prompt consent is the current transmission policy; automated assessment without fresh consent should wait for an explicit privacy policy. Measure question/request tokens before broadening the opt-in; the existing word budget covers only rendered context, not questions or transport overhead.
 
 Tests cover the question vocabulary and anchors, single-call behavior, option forwarding, raw-answer preservation, adapter request/response mapping, and all-or-nothing failure.

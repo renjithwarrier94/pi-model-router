@@ -2,9 +2,9 @@
 
 ## Status and scope
 
-This document describes the intended architecture of a model-routing extension for the Pi coding agent. Implemented pieces include SDK-independent judgment and conversation snapshot models, the `JudgmentProvider` port and error type, the TypeSafe adapter with runtime validation, the Pi context mapper, model-option types with strict configuration validation, bounded context preparation, and the five-question task assessment operation. Minimal npm tooling, compile-time contract tests, mocked-transport tests, and in-memory Pi mapping tests are included. Routing logic and Pi lifecycle wiring remain deferred. See [TypeSafe adapter](typesafe-adapter.md) and [Pi context mapping](pi-context.md) for details.
+This document describes the intended architecture of a model-routing extension for the Pi coding agent. Implemented pieces include SDK-independent judgment and conversation snapshot models, the `JudgmentProvider` port and error type, the TypeSafe adapter with runtime validation, the Pi context mapper, model-option types with strict configuration validation, bounded context preparation, and the five-question task assessment operation. Minimal npm tooling, compile-time contract tests, mocked-transport tests, and in-memory Pi mapping tests are included. Routing selection and Pi model switching remain deferred; a consent-gated Pi assessment hook is available. See [TypeSafe adapter](typesafe-adapter.md), [Pi context mapping](pi-context.md), and [Pi assessment integration](pi-assessment.md).
 
-Empty directories contain `.gitkeep` placeholders. Except for the judgment/snapshot models, judgment port, TypeSafe adapter, Pi context mapper, configuration schema/model-option types, context preparation, and task assessment, the filenames below are planned responsibilities, not existing implementations or a requirement to create every module immediately.
+Empty directories contain `.gitkeep` placeholders. Except for the judgment/snapshot models, judgment port, TypeSafe adapter, Pi context mapper, configuration schema/model-option types, context preparation, task assessment, and the consent-gated Pi assessment hook, the filenames below are planned responsibilities, not existing implementations or a requirement to create every module immediately.
 
 ## Goal
 
@@ -157,7 +157,7 @@ Application-owned models support Choice, Score, and Noul questions sharing JSON-
 
 The adapter must validate requests and responses at runtime and reject incomplete or invalid results with `JudgmentProviderError`. Static types alone do not enforce probability ranges, distribution sums, or JSON serializability. No SDK types cross the boundary.
 
-Routing-specific questions and raw answer-to-assessment mapping are implemented in `assess-task.ts` and `models/task-assessment.ts`, not the provider adapter. All five independent questions share one approved context and one provider call. This replaces the originally proposed `ContextAssessor` port; no second port is needed yet. Context selection is not redaction: caller-approved transmission policy is required before wiring an actual Jev call. See [Task assessment](task-assessment.md).
+Routing-specific questions and raw answer-to-assessment mapping are implemented in `assess-task.ts` and `models/task-assessment.ts`, not the provider adapter. All five independent questions share one approved context and one provider call. This replaces the originally proposed `ContextAssessor` port; no second port is needed yet. Context selection is not redaction: the opt-in Pi hook uses per-prompt user consent before transmitting selected text, but automatic routing requires a stronger privacy policy. See [Task assessment](task-assessment.md).
 
 Configuration and candidate models are passed into the use case as values initially. Add additional ports only when an actual use case needs an external operation; do not introduce generic repositories or services preemptively.
 
@@ -175,6 +175,8 @@ The Pi adapter owns the host-specific lifecycle and side effects:
 - Maintain overrides and restore branch-appropriate session state.
 
 Only this adapter and the outer entry/wiring modules may reference Pi APIs. The core must never receive an `ExtensionContext`, session manager, or Pi model object.
+
+`src/index.ts` and `assessment-extension.ts` register a consent-gated one-shot assessment hook. It reports only numerical/category judgments and never switches models. No automatic routing occurs without a separate selection policy and transmission policy. See [Pi assessment integration](pi-assessment.md).
 
 `map-context.ts` is implemented using `buildSessionProjection()` so branch selection, compaction, and context edits are handled by Pi. It retains user/assistant text and image counts, with branch/compaction summaries separate from direct conversation. System messages, assistant thinking/tool calls, tool results, bash execution, and custom extension messages are excluded. See [Pi context mapping](pi-context.md) for the contract and limitations.
 
