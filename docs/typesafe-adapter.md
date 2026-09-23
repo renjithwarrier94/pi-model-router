@@ -25,6 +25,8 @@ console.log(result.answers.inspect.probability);
 
 ## Configuration
 
+The Pi integration (`src/adapters/pi/resolve-judgment-provider.ts`) chooses the recipient, independently of coding-model options. It resolves Pi's OpenRouter credential first via `ctx.modelRegistry.getApiKeyForProvider("openrouter")`, then `OPENROUTER_API_KEY`, then `TYPESAFE_API_KEY`. The first two use `baseURL: "https://openrouter.ai/api"` and `defaultModel: "jev-1.13"`; direct TypeSafe uses `baseURL: "https://api.typesafe.ai"` and `defaultModel: "jev-latest"`. If none exists, the Pi command does not grant consent. Missing credentials are not inferred from Pi's selected coding model, and no credentials are read directly from `auth.json`. This uses the same SDK/port mapping, not a separate OpenRouter chat adapter. See [Pi assessment and routing](pi-assessment.md).
+
 The constructor accepts `apiKey`, `baseURL`, `defaultModel`, `timeout`, `retry`, and `fetch`. Omitted credentials, base URL, and model use SDK environment/default resolution. Custom `fetch` supports controlled transport tests.
 
 Defaults are a 10-second **per-attempt** timeout and zero retries. Explicit retry configuration uses the SDK's bounded retry policy. There is no total retry deadline; callers may supply `judge(request, { signal })` for overall cancellation. A caller-provided timeout signal is classified as `cancelled`; the SDK's attempt timeout is classified as `timeout`.
@@ -53,4 +55,4 @@ npm run typecheck
 npm test
 ```
 
-Tests use the real SDK with a mocked HTTP transport. No live API calls are made; live model behavior and production numerical precision have not been verified.
+Tests use the real SDK with a mocked HTTP transport, including the OpenRouter System One URL, bearer key, and bare Jev model ID. No live API calls are made; live model behavior and production numerical precision have not been verified.

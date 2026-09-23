@@ -5,6 +5,7 @@ import type { JudgmentProvider } from "../../../src/application/ports/judgment-p
 import type { ModelOption } from "../../../src/domain/model-option.js";
 import type { RoutingAdapters } from "../../../src/adapters/pi/assessment-extension.js";
 import { createAssessmentExtension } from "../../../src/adapters/pi/assessment-extension.js";
+import type { JudgmentBackend } from "../../../src/adapters/pi/resolve-judgment-provider.js";
 
 const policy = {
   weights: { reasoningDemand: 1, dependencyScope: 0, contextIntegrationDemand: 0 },
@@ -20,6 +21,7 @@ function runHarness(overrides: {
   config?: RoutingAdapters["loadConfig"];
   candidates?: RoutingAdapters["candidates"];
   switchModel?: (model: unknown) => Promise<boolean>;
+  resolveBackend?: () => Promise<JudgmentBackend>;
 } = {}) {
   const handlers = new Map<string, (...args: any[]) => unknown>();
   const commands = new Map<string, (arg: string, ctx: ExtensionContext) => Promise<void>>();
@@ -70,7 +72,7 @@ function runHarness(overrides: {
     sendMessage() { assert.fail("route must not inject context"); },
     appendEntry() { assert.fail("route must not persist context"); },
   } as unknown as ExtensionAPI;
-  createAssessmentExtension(() => provider, routing)(pi);
+  createAssessmentExtension(overrides.resolveBackend ?? (async () => ({ provider, recipient: "TypeSafe" })), routing)(pi);
   return {
     ctx, notifications, switched, levels, calls: () => calls,
     async command(name: string, arg: string) { await commands.get(name)?.(arg, ctx); },
@@ -170,6 +172,21 @@ test("an in-flight route cancelled before assessment returns never switches mode
   } });
   await pending;
   assert.deepEqual(h.switched, []);
+});
+
+test("missing credentials reject route consent before config or conversation access", async () => {
+  let configCalls = 0;
+  const h = runHarness({
+    resolveBackend: async () => { throw Error("PRIVATE_KEY_FAILURE"); },
+    config: async () => { configCalls++; assert.fail("no config read"); },
+  });
+  await h.command("model-router-route", "once");
+  await h.run("PRIVATE_PROMPT");
+  assert.equal(configCalls, 0);
+  assert.equal(h.calls(), 0);
+  assert.deepEqual(h.switched, []);
+  assert.match(h.notifications.at(-1) ?? "", /No consent granted/);
+  assert.doesNotMatch(JSON.stringify(h.notifications), /PRIVATE_/);
 });
 
 test("off and session replacement revoke route permission", async () => {

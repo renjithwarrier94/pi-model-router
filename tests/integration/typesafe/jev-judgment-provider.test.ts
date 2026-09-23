@@ -52,6 +52,20 @@ test("maps all question types through the real SDK and normalizes answers", asyn
   assert.deepEqual(result.answers.inspect, { type: "noul", probability: 0.9 });
 });
 
+test("OpenRouter System One uses the supported SDK endpoint, key, and bare Jev model", async () => {
+  const adapter = new JevJudgmentProvider({
+    apiKey: "PRIVATE_OPENROUTER_KEY", baseURL: "https://openrouter.ai/api", defaultModel: "jev-1.13",
+    fetch: async (url, init) => {
+      assert.equal(String(url), "https://openrouter.ai/api/v1/systemone");
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer PRIVATE_OPENROUTER_KEY");
+      assert.equal(JSON.parse(String(init?.body)).model, "jev-1.13");
+      return Response.json(response());
+    },
+  });
+  const result = await adapter.judge(request);
+  assert.equal(result.answers.task.choice, "refactor");
+});
+
 for (const [status, code] of [[400, "invalid-request"], [401, "unauthorized"], [403, "unauthorized"], [422, "invalid-request"], [429, "rate-limited"], [500, "unavailable"], [408, "timeout"], [504, "timeout"]] as const) {
   test(`normalizes HTTP ${status} without exposing payloads`, async () => {
     await assert.rejects(provider({ error: "SECRET" }, status).judge(request), errorCode(code));

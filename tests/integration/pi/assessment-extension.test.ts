@@ -8,6 +8,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { JudgmentProvider } from "../../../src/application/ports/judgment-provider.js";
 import { createAssessmentExtension } from "../../../src/adapters/pi/assessment-extension.js";
+import type { JudgmentBackend } from "../../../src/adapters/pi/resolve-judgment-provider.js";
 
 const answers = {
   workCategory: {
@@ -20,7 +21,7 @@ const answers = {
   missingCriticalEvidence: { type: "noul", probability: 0.4 },
 };
 
-function harness(provider: JudgmentProvider, hasUI = true) {
+function harness(provider: JudgmentProvider, hasUI = true, resolve?: () => Promise<JudgmentBackend>) {
   const handlers = new Map<string, (...params: any[]) => unknown>();
   let command: ((args: string, ctx: ExtensionContext) => Promise<void>) | undefined;
   const notifications: { message: string; level: string }[] = [];
@@ -41,7 +42,7 @@ function harness(provider: JudgmentProvider, hasUI = true) {
     appendEntry() { assert.fail("assessment must not persist prompt or result"); },
     sendMessage() { assert.fail("assessment must not inject text into model context"); },
   } as unknown as ExtensionAPI;
-  createAssessmentExtension(() => provider)(pi);
+  createAssessmentExtension(resolve ?? (async () => ({ provider, recipient: "TypeSafe" })))(pi);
   const run = async (prompt: string) => handlers.get("before_agent_start")?.({
     type: "before_agent_start", prompt,
   } satisfies Pick<BeforeAgentStartEvent, "type" | "prompt">, context);
@@ -120,12 +121,76 @@ test("stale asynchronous answers are ignored after off or session replacement", 
   const h = harness({ judge: async () => new Promise<{ answers: typeof answers }>(resolve => { finish = resolve; }) as never });
   await h.invoke("once");
   const pending = h.run("current");
+  await new Promise<void>(done => setImmediate(done));
   assert.ok(finish);
   await h.invoke("off");
   await h.fire("session_start");
   finish({ answers });
   await pending;
   assert.ok(!h.notifications.some(n => n.message.includes("reasoning")));
+});
+
+test("missing credentials fail at once and never grant consent", async () => {
+  let calls = 0;
+  const h = harness({ async judge() { calls++; assert.fail("no send"); } }, true,
+    async () => { throw Error("PRIVATE_KEY_FAILURE"); });
+  await h.invoke("once");
+  await h.run("PRIVATE_PROMPT");
+  assert.equal(calls, 0);
+  assert.match(h.notifications.at(-1)?.message ?? "", /No consent granted/);
+  assert.doesNotMatch(JSON.stringify(h.notifications), /PRIVATE_/);
+});
+
+test("missing credentials in a non-UI command reject explicitly", async () => {
+  const h = harness({ async judge(): Promise<never> { assert.fail("no send"); } }, false,
+    async () => { throw Error("PRIVATE_KEY_FAILURE"); });
+  await assert.rejects(h.invoke("once"), /No consent granted/);
+  await h.run("PRIVATE_PROMPT");
+  assert.deepEqual(h.notifications, []);
+});
+
+test("lost credentials after consent skip before assessment", async () => {
+  let configured = true;
+  let calls = 0;
+  const provider = { async judge(): Promise<never> { calls++; assert.fail("no send"); } };
+  const h = harness(provider, true, async () => {
+    if (!configured) throw Error("PRIVATE_KEY_FAILURE");
+    return { provider, recipient: "OpenRouter" };
+  });
+  await h.invoke("once");
+  assert.match(h.notifications.at(-1)?.message ?? "", /via OpenRouter/);
+  configured = false;
+  await h.run("PRIVATE_PROMPT");
+  assert.equal(calls, 0);
+  assert.match(h.notifications.at(-1)?.message ?? "", /failed/);
+  assert.doesNotMatch(JSON.stringify(h.notifications), /PRIVATE_/);
+});
+
+test("a recipient change after consent cannot send the prompt elsewhere", async () => {
+  let recipient: JudgmentBackend["recipient"] = "TypeSafe";
+  let calls = 0;
+  const provider = { async judge(): Promise<never> { calls++; assert.fail("no send"); } };
+  const h = harness(provider, true, async () => ({ provider, recipient }));
+  await h.invoke("once");
+  recipient = "OpenRouter";
+  await h.run("PRIVATE_PROMPT");
+  assert.equal(calls, 0);
+  assert.match(h.notifications.at(-1)?.message ?? "", /recipient changed/);
+  assert.doesNotMatch(JSON.stringify(h.notifications), /PRIVATE_/);
+});
+
+test("off during credential lookup cannot re-arm one-shot consent", async () => {
+  let resolve: ((value: JudgmentBackend) => void) | undefined;
+  let calls = 0;
+  const provider = { async judge(): Promise<never> { calls++; assert.fail("no send"); } };
+  const h = harness(provider, true, () => new Promise<JudgmentBackend>(done => { resolve = done; }));
+  const pending = h.invoke("once");
+  assert.ok(resolve);
+  await h.invoke("off");
+  resolve({ provider, recipient: "OpenRouter" });
+  await pending;
+  await h.run("PRIVATE_PROMPT");
+  assert.equal(calls, 0);
 });
 
 test("no UI can still assess without logging or injecting data", async () => {

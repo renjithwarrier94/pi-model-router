@@ -4,10 +4,10 @@ import { loadModelRouterConfig } from "../config/load-config.js";
 import type { RuntimeCandidate } from "./runtime-candidates.js";
 import { getRuntimeCandidates } from "./runtime-candidates.js";
 import { selectModel } from "../../application/use-cases/select-model.js";
-import type { JudgmentProvider } from "../../application/ports/judgment-provider.js";
 import { prepareContext } from "../../application/use-cases/prepare-context.js";
 import { assessTask } from "../../application/use-cases/assess-task.js";
-import { JevJudgmentProvider } from "../typesafe/jev-judgment-provider.js";
+import { resolveJudgmentBackend, type JudgmentBackend } from "./resolve-judgment-provider.js";
+import { JudgmentProviderError } from "../../application/ports/judgment-provider.js";
 import { mapContext } from "./map-context.js";
 
 export interface RoutingAdapters {
@@ -22,11 +22,11 @@ const defaultRoutingAdapters: RoutingAdapters = {
 
 /** Provider and host adapters may be supplied for hook tests; production uses Pi and TypeSafe. */
 export function createAssessmentExtension(
-  createProvider: () => JudgmentProvider = () => new JevJudgmentProvider(),
+  resolveBackend: (ctx: ExtensionContext) => Promise<JudgmentBackend> = resolveJudgmentBackend,
   routing: RoutingAdapters = defaultRoutingAdapters,
 ): (pi: ExtensionAPI) => void {
   return (pi) => {
-    let next: "assess" | "route" | null = null;
+    let next: { intent: "assess" | "route"; recipient: JudgmentBackend["recipient"] } | null = null;
     let generation = 0;
 
     const reset = () => {
@@ -41,17 +41,25 @@ export function createAssessmentExtension(
       description: "Consent to assess the next prompt with Jev (sends selected unredacted conversation to TypeSafe); or cancel with off",
       handler: async (args, ctx) => {
         switch (args.trim()) {
-          case "once":
-            next = "assess";
-            generation += 1;
-            notify(ctx, "Next prompt only: selected, unredacted conversation and current prompt will be sent to TypeSafe for assessment. No model will be switched.", "warning");
+          case "once": {
+            reset();
+            const run = generation;
+            try {
+              const backend = await resolveBackend(ctx);
+              if (generation !== run) break;
+              next = { intent: "assess", recipient: backend.recipient };
+              notify(ctx, `Next prompt only: selected, unredacted conversation and current prompt will be sent via ${backend.recipient} to Jev for assessment. No model will be switched.`, "warning");
+            } catch {
+              if (generation === run) credentialsUnavailable(ctx, "Assessment");
+            }
             break;
+          }
           case "off":
             reset();
             notify(ctx, "Model-router assessment consent cancelled.", "info");
             break;
           default:
-            notify(ctx, "Usage: /model-router-assess once | off. Default is off. 'once' sends selected, unredacted conversation and the next prompt to TypeSafe.", "info");
+            notify(ctx, "Usage: /model-router-assess once | off. Default is off. 'once' may send selected, unredacted conversation and the next prompt via OpenRouter or TypeSafe.", "info");
         }
       },
     });
@@ -60,24 +68,33 @@ export function createAssessmentExtension(
       description: "Consent to assess the next prompt with Jev and select a configured model (one prompt only)",
       handler: async (args, ctx) => {
         switch (args.trim()) {
-          case "once":
-            next = "route";
-            generation += 1;
-            notify(ctx, "Next prompt only: selected, unredacted conversation and current prompt may be sent to TypeSafe; an eligible configured model and thinking level may be selected. Uncalibrated policy.", "warning");
+          case "once": {
+            reset();
+            const run = generation;
+            try {
+              const backend = await resolveBackend(ctx);
+              if (generation !== run) break;
+              next = { intent: "route", recipient: backend.recipient };
+              notify(ctx, `Next prompt only: selected, unredacted conversation and current prompt may be sent via ${backend.recipient} to Jev; an eligible configured model and thinking level may be selected. Uncalibrated policy.`, "warning");
+            } catch {
+              if (generation === run) credentialsUnavailable(ctx, "Routing");
+            }
             break;
+          }
           case "off":
             reset();
             notify(ctx, "Model-router route consent cancelled.", "info");
             break;
           default:
-            notify(ctx, "Usage: /model-router-route once | off. Default is off. 'once' may send unredacted context to TypeSafe and switch the model for the next prompt.", "info");
+            notify(ctx, "Usage: /model-router-route once | off. Default is off. 'once' may send unredacted context via OpenRouter or TypeSafe and switch the model for the next prompt.", "info");
         }
       },
     });
 
     pi.on("before_agent_start", async (event, ctx) => {
-      const intent = next;
-      if (!intent) return;
+      const pending = next;
+      if (!pending) return;
+      const intent = pending.intent;
       next = null; // Consume permission before any asynchronous operation or error.
       const run = generation;
       const sessionId = ctx.sessionManager.getSessionId();
@@ -88,6 +105,13 @@ export function createAssessmentExtension(
       if (!isCurrent()) return;
 
       try {
+        // Re-resolve before reading context; credentials may have changed since consent.
+        const backend = await resolveBackend(ctx);
+        if (!isCurrent()) return;
+        if (backend.recipient !== pending.recipient) {
+          notify(ctx, "Model-router recipient changed since consent; request once again. Current model unchanged.", "warning");
+          return;
+        }
         let candidates: RuntimeCandidate[] = [];
         let config: ModelRouterConfig | undefined;
         if (intent === "route") {
@@ -111,8 +135,7 @@ export function createAssessmentExtension(
           notify(ctx, "Model-router assessment skipped: current request exceeds context limits. Current model unchanged.", "warning");
           return;
         }
-        const provider = createProvider();
-        const assessment = await assessTask(prepared.context, provider, ctx.signal ? { signal: ctx.signal } : undefined);
+        const assessment = await assessTask(prepared.context, backend.provider, ctx.signal ? { signal: ctx.signal } : undefined);
         if (!isCurrent()) return;
         // Never put results or raw input into the model-facing transcript.
         if (intent === "assess") {
@@ -150,6 +173,12 @@ export function createAssessmentExtension(
       }
     });
   };
+}
+
+function credentialsUnavailable(ctx: ExtensionContext, operation: string): void {
+  const message = `${operation} unavailable: configure OpenRouter in Pi, OPENROUTER_API_KEY, or TYPESAFE_API_KEY. No consent granted.`;
+  if (!ctx.hasUI) throw new JudgmentProviderError("unauthorized", message);
+  notify(ctx, message, "warning");
 }
 
 function notify(ctx: ExtensionContext, message: string, level: "info" | "warning"): void {

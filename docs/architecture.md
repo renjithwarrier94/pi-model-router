@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This document describes the architecture of a Pi model-routing extension. The judgment port/TypeSafe adapter, conversation mapper/preparer, strict model and policy configuration, file loader, runtime candidate checks, pure selection use case, and Pi one-shot assessment/routing hook are implemented. **Unattended routing and calibration are not implemented.** See [TypeSafe adapter](typesafe-adapter.md), [Pi context mapping](pi-context.md), [configuration](configuration.md), and [Pi assessment and routing](pi-assessment.md).
+This document describes the architecture of a Pi model-routing extension. The judgment port/TypeSafe adapter, OpenRouter-or-direct credential resolution, conversation mapper/preparer, strict model and policy configuration, file loader, runtime candidate checks, pure selection use case, and Pi one-shot assessment/routing hook are implemented. **Unattended routing and calibration are not implemented.** See [TypeSafe adapter](typesafe-adapter.md), [Pi context mapping](pi-context.md), [configuration](configuration.md), and [Pi assessment and routing](pi-assessment.md).
 
 Empty directories contain `.gitkeep` placeholders. The layout below shows implemented files; later boundaries and evaluation tooling may be added as needed.
 
@@ -56,6 +56,7 @@ src/
   adapters/
     pi/
       assessment-extension.ts
+      resolve-judgment-provider.ts
       map-context.ts
       runtime-candidates.ts
     typesafe/
@@ -159,7 +160,7 @@ Do not infer that every model-selection event is a manual user override. Disting
 
 ### TypeSafe adapter
 
-`jev-judgment-provider.ts` implements `JudgmentProvider`. It owns client construction, configuration, cancellation, and sanitized error normalization. `map-judgment.ts` owns SDK request/response mapping and runtime validation. Neither module owns routing questions or model selection. A separate client-construction module is unnecessary at this stage.
+`jev-judgment-provider.ts` implements `JudgmentProvider`. It owns client construction, configuration, cancellation, and sanitized error normalization. The Pi adapter resolves credentials from Pi OpenRouter authentication, then an OpenRouter environment key, then a TypeSafe environment key, and injects a pinned endpoint/model into the same SDK adapter. Missing credentials reject one-shot consent before any assessment; neither key nor SDK response enters the application layer. `map-judgment.ts` owns SDK request/response mapping and runtime validation. Neither module owns routing questions or model selection. A separate client-construction module is unnecessary at this stage.
 
 The application defines the implemented v1 question set:
 
