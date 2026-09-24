@@ -5,7 +5,7 @@ import {
   type ModelOption,
   type ThinkingLevel,
 } from "../../domain/model-option.js";
-import type { RoutingPolicy, DifficultyScorePoint } from "../../domain/routing-policy.js";
+import type { RoutingPolicy, DifficultyScorePoint, SubstantialReviewPolicy } from "../../domain/routing-policy.js";
 
 /** On-disk configuration shape, not the routing use case's input contract. */
 export interface ModelRouterConfig {
@@ -82,11 +82,17 @@ export function parseModelRouterConfig(value: unknown): ModelRouterConfig {
     combinations.add(combination);
     options.push(option);
   }
+  if (policy?.substantialReview) {
+    const ids = new Set(options.map(option => option.id));
+    for (const id of policy.substantialReview.allowedOptionIds) {
+      if (!ids.has(id)) throw new ModelRouterConfigError("$.policy.substantialReview.allowedOptionIds", "must reference configured options");
+    }
+  }
   return policy ? { version: 1, options, policy } : { version: 1, options };
 }
 
 function parsePolicy(value: unknown, path: string): RoutingPolicy {
-  const raw = object(value, path, ["weights", "difficultyToDeepSweScore", "maxMissingCriticalEvidenceProbability"]);
+  const raw = object(value, path, ["weights", "difficultyToDeepSweScore", "maxMissingCriticalEvidenceProbability", "substantialReview"]);
   for (const key of ["weights", "difficultyToDeepSweScore", "maxMissingCriticalEvidenceProbability"]) {
     if (!Object.hasOwn(raw, key)) throw new ModelRouterConfigError(`${path}.${key}`, "is required");
   }
@@ -134,7 +140,34 @@ function parsePolicy(value: unknown, path: string): RoutingPolicy {
   }
   const missing = nonnegativeNumber(raw.maxMissingCriticalEvidenceProbability, `${path}.maxMissingCriticalEvidenceProbability`);
   if (missing > 1) throw new ModelRouterConfigError(`${path}.maxMissingCriticalEvidenceProbability`, "must be at most 1");
-  return { weights, difficultyToDeepSweScore: points, maxMissingCriticalEvidenceProbability: missing };
+  const substantialReview = Object.hasOwn(raw, "substantialReview")
+    ? parseSubstantialReview(raw.substantialReview, `${path}.substantialReview`) : undefined;
+  return { weights, difficultyToDeepSweScore: points, maxMissingCriticalEvidenceProbability: missing,
+    ...(substantialReview ? { substantialReview } : {}) };
+}
+
+function parseSubstantialReview(value: unknown, path: string): SubstantialReviewPolicy {
+  const keys = ["minChangedFiles", "minChangedLines", "minDirectories", "allowedOptionIds"];
+  const raw = object(value, path, keys);
+  for (const key of keys) {
+    if (!Object.hasOwn(raw, key)) throw new ModelRouterConfigError(`${path}.${key}`, "is required");
+  }
+  const count = (key: string): number => {
+    const n = nonnegativeNumber(raw[key], `${path}.${key}`);
+    if (!Number.isSafeInteger(n) || n < 1) throw new ModelRouterConfigError(`${path}.${key}`, "must be a positive safe integer");
+    return n;
+  };
+  const minChangedFiles = count("minChangedFiles");
+  const minChangedLines = count("minChangedLines");
+  const minDirectories = count("minDirectories");
+  if (!Array.isArray(raw.allowedOptionIds) || raw.allowedOptionIds.length === 0) {
+    throw new ModelRouterConfigError(`${path}.allowedOptionIds`, "must be a nonempty array");
+  }
+  const allowedOptionIds = raw.allowedOptionIds.map((id: unknown, index: number) => identifier(id, `${path}.allowedOptionIds[${index}]`));
+  if (new Set(allowedOptionIds).size !== allowedOptionIds.length) {
+    throw new ModelRouterConfigError(`${path}.allowedOptionIds`, "must be unique");
+  }
+  return { minChangedFiles, minChangedLines, minDirectories, allowedOptionIds };
 }
 
 function parseOption(value: unknown, path: string): ModelOption {

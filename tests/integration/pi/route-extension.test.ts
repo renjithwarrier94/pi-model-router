@@ -14,7 +14,7 @@ const policy = {
 };
 const option: ModelOption = {
   id: "cheapest", provider: "provider", model: "model", thinkingLevel: "high", deepSweScore: 60,
-  costPerTaskUsd: 0.1, categories: ["implement"],
+  costPerTaskUsd: 0.1, categories: ["implement", "review"],
 };
 function runHarness(overrides: {
   provider?: JudgmentProvider;
@@ -22,6 +22,7 @@ function runHarness(overrides: {
   candidates?: RoutingAdapters["candidates"];
   switchModel?: (model: unknown) => Promise<boolean>;
   resolveBackend?: () => Promise<JudgmentBackend>;
+  reviewScope?: RoutingAdapters["reviewScope"];
 } = {}) {
   const handlers = new Map<string, (...args: any[]) => unknown>();
   const commands = new Map<string, (arg: string, ctx: ExtensionContext) => Promise<void>>();
@@ -34,7 +35,8 @@ function runHarness(overrides: {
   let activeModel: { provider: string; id: string } | undefined;
   let currentLevel = "off";
   const ctx = {
-    hasUI: true, mode: "tui", signal: undefined, sessionManager,
+    hasUI: true, mode: "tui", signal: undefined, sessionManager, cwd: "/trusted/repo",
+    isProjectTrusted: () => true,
     get model() { return activeModel; },
     ui: {
       notify: (message: string) => notifications.push(message),
@@ -58,6 +60,7 @@ function runHarness(overrides: {
   const routing: RoutingAdapters = {
     loadConfig: overrides.config ?? (async () => ({ version: 1, options: [option], policy })),
     candidates: overrides.candidates ?? (async () => [{ option, model: { provider: "provider", id: "model" } as never }]),
+    reviewScope: overrides.reviewScope ?? (async () => ({ changedFiles: 1, changedLines: 1, directories: 1 })),
   };
   const pi = {
     on(event: string, handler: (...args: any[]) => unknown) { handlers.set(event, handler); return () => {}; },
@@ -105,6 +108,43 @@ test("route once selects a model and configured thinking level, while assessment
   assert.ok(!h.notifications.some(n => n.includes("cheapest")));
   assert.doesNotMatch(JSON.stringify(h.widgets), /PRIVATE_NEXT_PROMPT/);
   assert.doesNotMatch(JSON.stringify(h.notifications), /PRIVATE_NEXT_PROMPT/);
+});
+
+test("explicit base is measured before Jev and applies only to eligible review models", async () => {
+  const weak = { ...option, id: "weak", provider: "provider", model: "weak", costPerTaskUsd: 0.01 };
+  const reviewPolicy = { ...policy, substantialReview: { minChangedFiles: 8, minChangedLines: 250,
+    minDirectories: 3, allowedOptionIds: ["cheapest"] } };
+  const provider: JudgmentProvider = { async judge() { return { answers: {
+    workCategory: { type: "choice", choice: "review", confidence: 1, probabilities: {} },
+    reasoningDemand: { type: "score", score: 0, confidence: 1, probabilities: [1, 0, 0] },
+    dependencyScope: { type: "score", score: 0, confidence: 1, probabilities: [1, 0, 0] },
+    contextIntegrationDemand: { type: "score", score: 0, confidence: 1, probabilities: [1, 0, 0] },
+    missingCriticalEvidence: { type: "noul", probability: 0 },
+  } } as never; } };
+  let scopeCalls = 0;
+  const setup = (reviewScope: NonNullable<RoutingAdapters["reviewScope"]>, candidates = [weak, option]) => runHarness({
+    provider, reviewScope, config: async () => ({ version: 1, policy: reviewPolicy, options: [weak, option] }),
+    candidates: async () => candidates.map(o => ({ option: o, model: { provider: o.provider, id: o.model } as never })),
+  });
+  const h = setup(async (cwd, base) => {
+    scopeCalls++;
+    assert.equal(cwd, "/trusted/repo"); assert.equal(base, "main");
+    return { changedFiles: 8, changedLines: 12, directories: 1 };
+  });
+  await h.command("model-router-route", "once base=main");
+  await h.run("review this branch");
+  assert.equal(scopeCalls, 1);
+  assert.deepEqual(h.switched, [{ provider: option.provider, id: option.model }]);
+  const unavailable = setup(async () => ({ changedFiles: 10, changedLines: 1, directories: 1 }), [weak]);
+  await unavailable.command("model-router-route", "once base=main");
+  await unavailable.run("review");
+  assert.equal(unavailable.switched.length, 0);
+  assert.ok(unavailable.notifications.some(n => n.includes("review-tier-unavailable")));
+  const failed = setup(async () => { throw new Error("PRIVATE_GIT_PATH"); });
+  await failed.command("model-router-route", "once base=main");
+  await failed.run("PRIVATE_REVIEW_PROMPT");
+  assert.equal(failed.switched.length, 0);
+  assert.equal(failed.notifications.some(n => n.includes("PRIVATE_")), false);
 });
 
 test("absent policy, options, or eligible models skip without a TypeSafe request", async () => {

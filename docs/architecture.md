@@ -60,6 +60,7 @@ src/
       resolve-judgment-provider.ts
       map-context.ts
       runtime-candidates.ts
+      review-scope.ts
     typesafe/
       jev-judgment-provider.ts
       map-judgment.ts
@@ -89,9 +90,10 @@ The domain defines the vocabulary and policy data of routing and must not import
 | `routing-context.ts` (planned) | Routing-specific observed requirements and context-size estimates; the incoming conversation snapshot is application-owned. |
 | `application/models/task-assessment.ts` | Semantic judgments such as task category and complexity, with uncertainty represented separately from observed facts. |
 | `model-option.ts` | Configured model identity, cost, measured score, and categories; runtime eligibility lives in the Pi adapter. |
-| `routing-policy.ts` | Configurable demand weights, score curve, and missing-evidence threshold, expressed as host-independent data. |
+| `routing-policy.ts` | Configurable demand weights, score curve, missing-evidence threshold, and optional substantial-review tier, expressed as host-independent data. |
 | `SelectionDecision` in `select-model.ts` | A pure proposal to switch or remain unchanged, with structured reasons. |
 | `adapters/pi/runtime-candidates.ts` | Pi-specific registry/auth, modality, scope, and capacity checks, before pure selection. |
+| `adapters/pi/review-scope.ts` | Bounded, local Git metadata measurement for explicit-base reviews; no paths or diff contents cross into the application. |
 | `application/use-cases/select-model.ts` | Pure ranking, tie-breaking, and fallback selection over host-eligible candidates. |
 
 Model identities are plain data rather than Pi SDK objects. Configured capability tiers are policy metadata, not claims inferred from model names.
@@ -104,7 +106,7 @@ Domain functions should be deterministic for the same inputs. Any state that aff
 
 The application coordinates a routing operation without knowing how Pi, Jev, or configuration files work.
 
-`prepare-context.ts`, `assess-task.ts`, and `select-model.ts` are independent application operations. The Pi adapter coordinates them after explicit one-shot or confirmed session-scoped consent; it skips classification when config or runtime candidates are missing. `selectModel` takes only plain assessment, eligible option, and policy values and returns a structured decision without changing Pi state.
+`prepare-context.ts`, `assess-task.ts`, and `select-model.ts` are independent application operations. The Pi adapter coordinates them after explicit one-shot or confirmed session-scoped consent; it skips classification when config or runtime candidates are missing. `selectModel` takes only plain assessment, eligible option, policy, and optional review-scope values and returns a structured decision without changing Pi state. A configured substantial-review tier filters eligible options before cost ranking; no weaker fallback bypasses it.
 
 `models/conversation-snapshot.ts` defines `ConversationSnapshot`, `ChatMessage`, and `ConversationSummary` without SDK dependencies. The Pi mapper supplies an unbounded, unredacted snapshot; it does not send it to Jev.
 
@@ -136,7 +138,7 @@ The Pi adapter owns the host-specific lifecycle and side effects:
 - Intersect configured candidates with available models and applicable session scoping.
 - Resolve selected provider/model IDs and call Pi's model-switching API.
 - Distinguish proposed decisions from successfully applied switches.
-- Present all five judgments and policy-weighted demand in Pi's compact status line (`format-status.ts`) without placing diagnostics into model context.
+- Present all five judgments and policy-weighted demand via the dedicated TUI widget, RPC status, or non-UI stderr (`format-status.ts`) without placing diagnostics into model context.
 - Reset one-shot and session-only automatic consent on session/branch transitions and manual model/thinking changes; abort in-flight assessments on revocation. Bound each per-prompt routing attempt to 15 seconds. Pi records model and thinking-level changes as session state.
 
 Only this adapter and the outer entry/wiring modules may reference Pi APIs. The core must never receive an `ExtensionContext`, session manager, or Pi model object.

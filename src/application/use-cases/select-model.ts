@@ -1,16 +1,23 @@
 import type { ModelOption, TaskCategory } from "../../domain/model-option.js";
-import type { RoutingPolicy } from "../../domain/routing-policy.js";
+import type { RoutingPolicy, SubstantialReviewPolicy } from "../../domain/routing-policy.js";
 import type { TaskAssessment } from "../models/task-assessment.js";
+
+export interface ReviewScope {
+  readonly changedFiles: number;
+  readonly changedLines: number;
+  readonly directories: number;
+}
 
 export type SelectionDecision =
   | { readonly status: "selected" | "threshold-unmet"; readonly option: ModelOption; readonly difficulty: number; readonly requiredDeepSweScore: number; readonly shortfall: number }
-  | { readonly status: "unchanged"; readonly reason: "critical-evidence" | "unclear-category" | "no-eligible-model" | "no-category-match" };
+  | { readonly status: "unchanged"; readonly reason: "critical-evidence" | "unclear-category" | "no-eligible-model" | "no-category-match" | "review-tier-unavailable" };
 
 /** Only already runtime-eligible candidates enter this pure decision. Do not pass unchecked external configuration. */
 export function selectModel(
   assessment: TaskAssessment,
   eligible: readonly ModelOption[],
   policy: RoutingPolicy,
+  reviewScope?: ReviewScope,
 ): SelectionDecision {
   if (assessment.missingCriticalEvidence.probability >= policy.maxMissingCriticalEvidenceProbability) {
     return { status: "unchanged", reason: "critical-evidence" };
@@ -18,9 +25,15 @@ export function selectModel(
   const category = assessment.workCategory.choice;
   if (category === "unclear") return { status: "unchanged", reason: "unclear-category" };
   if (eligible.length === 0) return { status: "unchanged", reason: "no-eligible-model" };
-  const compatible = eligible.filter(option => option.categories.includes("general") ||
+  let compatible = eligible.filter(option => option.categories.includes("general") ||
     (category !== "other" && option.categories.includes(category as TaskCategory)));
   if (compatible.length === 0) return { status: "unchanged", reason: "no-category-match" };
+  const floor = policy.substantialReview;
+  if (category === "review" && reviewScope && floor && isSubstantialReview(reviewScope, floor)) {
+    const allowed = new Set(floor.allowedOptionIds);
+    compatible = compatible.filter(option => allowed.has(option.id));
+    if (compatible.length === 0) return { status: "unchanged", reason: "review-tier-unavailable" };
+  }
 
   const { difficultyToDeepSweScore: points } = policy;
   const boundedDifficulty = calculateWeightedDifficulty(assessment, policy);
@@ -47,6 +60,12 @@ export function selectModel(
     status: "threshold-unmet", option, difficulty: boundedDifficulty,
     requiredDeepSweScore, shortfall: Math.max(0, requiredDeepSweScore - option.deepSweScore),
   };
+}
+
+export function isSubstantialReview(scope: ReviewScope, policy: SubstantialReviewPolicy): boolean {
+  return scope.changedFiles >= policy.minChangedFiles ||
+    scope.changedLines >= policy.minChangedLines ||
+    scope.directories >= policy.minDirectories;
 }
 
 /** Normalized weighted demand (0..1), shared by selection and the diagnostic status line. */

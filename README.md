@@ -27,6 +27,7 @@ A Pi extension that uses Jev to assess a prompt and choose a configured coding m
 | --- | --- |
 | `/model-router-assess once` | Assess the **next prompt** and show the judgments; do not switch models. |
 | `/model-router-route once` | Assess the **next prompt** and choose a model/thinking level. |
+| `/model-router-route once base=main` | For the **next prompt only**, measure local branch-review scope against an explicit base and apply the configured review tier if substantial. Requires a trusted Git repository root and `substantialReview` policy; does not detect skill names. |
 | `/model-router-auto on` | Ask for confirmation, then route subsequent prompts in this session (trusted project and interactive UI required). |
 | `/model-router-auto off` | Stop automatic routing and cancel pending one-shot permission. |
 

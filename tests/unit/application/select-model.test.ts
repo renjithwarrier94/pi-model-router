@@ -80,6 +80,30 @@ test("critical evidence and unclear category prohibit switching (including fallb
   assert.deepEqual(selectModel(assessment(), [], policy), { status: "unchanged", reason: "no-eligible-model" });
 });
 
+test("explicit substantial review scope restricts candidates, never category or safety gates", () => {
+  const review = assessment({ workCategory: { ...assessment().workCategory, choice: "review" },
+    reasoningDemand: { ...assessment().reasoningDemand, score: 0.22 },
+    dependencyScope: { ...assessment().dependencyScope, score: 0.89 },
+    contextIntegrationDemand: { ...assessment().contextIntegrationDemand, score: 0.13 } });
+  const scoped = { ...policy, difficultyToDeepSweScore: [{ difficulty: 0, score: 2.4 }, { difficulty: 1, score: 73.2 }],
+    substantialReview: { minChangedFiles: 8, minChangedLines: 250, minDirectories: 3, allowedOptionIds: ["sol-medium", "sol-high"] } };
+  const models = [option("luna-medium", 44.5, 0.052, ["review"]), option("sol-medium", 56.6, 0.38, ["general"]),
+    option("sol-high", 65.3, 0.64, ["review"])];
+  const choose = (scope?: { changedFiles: number; changedLines: number; directories: number }, candidates = models) =>
+    selectModel(review, candidates, scoped, scope);
+  assert.equal(choose().status === "selected" && (choose() as { option: ModelOption }).option.id, "luna-medium");
+  assert.equal((choose({ changedFiles: 7, changedLines: 249, directories: 2 }) as { option: ModelOption }).option.id, "luna-medium");
+  for (const scope of [{ changedFiles: 8, changedLines: 0, directories: 1 },
+    { changedFiles: 1, changedLines: 250, directories: 1 }, { changedFiles: 1, changedLines: 1, directories: 3 }]) {
+    assert.equal((choose(scope) as { option: ModelOption }).option.id, "sol-medium");
+    assert.deepEqual(choose(scope, [models[0]!]), { status: "unchanged", reason: "review-tier-unavailable" });
+  }
+  const other = assessment({ workCategory: { ...review.workCategory, choice: "implement" } });
+  assert.equal((selectModel(other, models, scoped, { changedFiles: 99, changedLines: 999, directories: 8 }) as { option: ModelOption }).option.id, "sol-medium");
+  assert.deepEqual(selectModel({ ...review, missingCriticalEvidence: { type: "noul", probability: 0.8 } }, models, scoped,
+    { changedFiles: 99, changedLines: 999, directories: 8 }), { status: "unchanged", reason: "critical-evidence" });
+});
+
 test("zero and maximum difficulty use exact endpoint scores; weight scale is irrelevant", () => {
   const scaled = { ...policy, weights: { reasoningDemand: 5, dependencyScope: 3, contextIntegrationDemand: 2 } };
   const zero = assessment({

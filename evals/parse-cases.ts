@@ -3,7 +3,7 @@ import { TASK_ASSESSMENT_QUESTIONS_VERSION } from "../src/application/use-cases/
 import type { EvaluationCase, ExpectedDecision } from "./evaluate.js";
 
 const categories: readonly string[] = ["explain", "implement", "diagnose", "review", "design", "research", "other", "unclear"];
-const reasons: readonly string[] = ["critical-evidence", "unclear-category", "no-eligible-model", "no-category-match"];
+const reasons: readonly string[] = ["critical-evidence", "unclear-category", "no-eligible-model", "no-category-match", "review-tier-unavailable"];
 const own = (value: object, key: string): boolean => Object.hasOwn(value, key);
 function invalid(path: string): never { throw new Error(`Invalid evaluation case at ${path}.`); }
 function object(value: unknown, path: string): Record<string, unknown> {
@@ -81,6 +81,7 @@ export function parseEvaluationCasesJson(text: string): EvaluationCase[] {
       expectedCategory: category(raw.expectedCategory, `${path}.expectedCategory`),
       expectedDecision, assessment: parseAssessment(raw.assessment, `${path}.assessment`),
       ...(own(raw, "eligibleOptionIds") ? { eligibleOptionIds: parseEligible(raw.eligibleOptionIds, `${path}.eligibleOptionIds`) } : {}),
+      ...(own(raw, "reviewScope") ? { reviewScope: parseScope(raw.reviewScope, `${path}.reviewScope`) } : {}),
     };
     if (raw.source === "synthetic") return { ...base, source: "synthetic" };
     if (raw.source === "recorded-jev") {
@@ -93,6 +94,17 @@ export function parseEvaluationCasesJson(text: string): EvaluationCase[] {
     }
     return invalid(`${path}.source`);
   });
+}
+
+function parseScope(value: unknown, path: string) {
+  const raw = object(value, path);
+  if (Object.keys(raw).length !== 3 || !["changedFiles", "changedLines", "directories"].every(key => own(raw, key))) invalid(path);
+  const number = (key: string) => {
+    const n = raw[key];
+    if (typeof n !== "number" || !Number.isSafeInteger(n) || n < 0) invalid(`${path}.${key}`);
+    return n as number;
+  };
+  return { changedFiles: number("changedFiles"), changedLines: number("changedLines"), directories: number("directories") };
 }
 
 function parseEligible(value: unknown, path: string): string[] {

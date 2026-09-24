@@ -29,7 +29,13 @@ Routing requires both `policy` and nonempty `options`. Without them it skips and
       { "difficulty": 0.5, "score": 60 },
       { "difficulty": 1, "score": 75 }
     ],
-    "maxMissingCriticalEvidenceProbability": 0.7
+    "maxMissingCriticalEvidenceProbability": 0.7,
+    "substantialReview": {
+      "minChangedFiles": 8,
+      "minChangedLines": 250,
+      "minDirectories": 3,
+      "allowedOptionIds": ["my-model-high"]
+    }
   },
   "options": [
     {
@@ -88,6 +94,8 @@ These functions perform no I/O, registry lookup, logging, or network calls. Stat
 ## Selection policy (experimental, uncalibrated)
 
 The three weights must be finite, nonnegative, and have a finite positive sum. Score levels are normalized from 0–2 to 0–1 before computing their weighted average. The curve has at least two points, begins at difficulty 0 and ends at 1, with strictly increasing difficulty and nondecreasing score values in [0,100]. Linear interpolation yields the required DeepSWE score. Scores and costs must be comparable across all configured thinking levels. A `missingCriticalEvidence` P(yes) **at or above** `maxMissingCriticalEvidenceProbability` leaves the current model unchanged; it is not a difficulty dimension. Jev's `unclear` category also leaves the model unchanged; `other` can match only `general` options.
+
+Optional `substantialReview` applies **only** to `/model-router-route once base=<ref>` when Jev identifies the next deliverable as `review`. The Git adapter measures aggregate changes relative to the merge base (including committed and local changes). Meeting **any** positive-integer threshold (`minChangedFiles`, added+deleted `minChangedLines`, or distinct parent `minDirectories`) restricts selection to the configured, nonempty `allowedOptionIds`. Those IDs must refer to configured options; inherited policies are validated against the final merged option list. This is a model/effort eligibility tier, **not** a minimum DeepSWE score. No matching runtime-eligible option leaves the model unchanged (`review-tier-unavailable`), including on the threshold-unmet fallback. Without an explicit base, ordinary routing and auto mode do not measure a diff or apply this rule. Do not treat the example thresholds as calibrated.
 
 Eligible category-specific options and `general` options meeting the required score are ranked by lowest cost, then highest DeepSWE score, then lexicographically lowest option ID. If no eligible category-compatible option meets the threshold, the highest-scoring compatible option wins, then lowest cost, then lowest ID, with an explicit `threshold-unmet` diagnostic. If no compatible option exists, the model stays unchanged. The tiny 1e-9 score comparison tolerance avoids rejecting a decimal score due solely to interpolation rounding. These are **illustrative, uncalibrated** numbers: DeepSWE is a coding benchmark, not validated for explanation, design, or research. Calibrate with representative labeled cases before trusting unattended selection. The offline synthetic regression suite in [evals](../evals/README.md) checks policy behavior against the example configuration, but does not measure Jev accuracy, model quality, or real cost.
 

@@ -59,6 +59,20 @@ test("invalid trusted project fails closed; invalid untrusted project is not ope
   assert.deepEqual((await loadModelRouterConfig(cwd, false)).options, globalConfig.options);
 }));
 
+test("review option IDs are checked against the final inherited/overridden list", async () => fixture(async (agent, cwd) => {
+  const floor = { minChangedFiles: 8, minChangedLines: 250, minDirectories: 3, allowedOptionIds: ["global"] };
+  await writeFile(join(agent, "model-router.json"), JSON.stringify({ ...globalConfig, policy: {
+    ...globalConfig.policy, substantialReview: floor,
+  } }));
+  await writeFile(join(cwd, ".pi", "model-router.json"), JSON.stringify({ version: 1, options: [] }));
+  await assert.rejects(() => loadModelRouterConfig(cwd, true), /review policy references unavailable options/);
+  assert.deepEqual((await loadModelRouterConfig(cwd, false)).policy?.substantialReview, floor);
+  await writeFile(join(cwd, ".pi", "model-router.json"), JSON.stringify({ version: 1, policy: {
+    ...globalConfig.policy, substantialReview: floor,
+  } }));
+  assert.deepEqual((await loadModelRouterConfig(cwd, true)).policy?.substantialReview, floor);
+}));
+
 test("unreadable global config does not silently fall back to project", async () => fixture(async (agent, cwd) => {
   await mkdir(join(agent, "model-router.json"));
   await writeFile(join(cwd, ".pi", "model-router.json"), JSON.stringify(globalConfig));

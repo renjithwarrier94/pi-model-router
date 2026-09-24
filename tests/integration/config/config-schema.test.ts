@@ -252,6 +252,25 @@ test("missing-evidence threshold requires a probability", () => {
   }
 });
 
+test("substantial review thresholds and option allowlist are validated", () => {
+  const floor = { minChangedFiles: 8, minChangedLines: 250, minDirectories: 3, allowedOptionIds: ["candidate"] };
+  const input = { version: 1, options: [option()], policy: { ...policy, substantialReview: floor } };
+  assert.deepEqual(parseModelRouterConfig(input), input);
+  assert.notEqual(parseModelRouterConfig(input).policy?.substantialReview?.allowedOptionIds, floor.allowedOptionIds);
+  for (const value of [0, -1, 1.5, Infinity, "8"]) {
+    rejects({ ...input, policy: { ...policy, substantialReview: { ...floor, minChangedFiles: value } } },
+      "$.policy.substantialReview.minChangedFiles");
+  }
+  rejects({ ...input, policy: { ...policy, substantialReview: { ...floor, allowedOptionIds: [] } } },
+    "$.policy.substantialReview.allowedOptionIds");
+  rejects({ ...input, policy: { ...policy, substantialReview: { ...floor, allowedOptionIds: ["candidate", "candidate"] } } },
+    "$.policy.substantialReview.allowedOptionIds");
+  rejects({ ...input, policy: { ...policy, substantialReview: { ...floor, allowedOptionIds: ["unknown"] } } },
+    "$.policy.substantialReview.allowedOptionIds");
+  rejects({ ...input, policy: { ...policy, substantialReview: { ...floor, unknown: true } } },
+    "$.policy.substantialReview");
+});
+
 test("validates frozen input without mutating it", () => {
   const candidate = Object.freeze(option({ categories: Object.freeze(["general"]) }));
   const input = Object.freeze({ version: 1, options: Object.freeze([candidate]) });

@@ -3,7 +3,8 @@ import type { ModelRouterConfig } from "../config/config-schema.js";
 import { loadModelRouterConfig } from "../config/load-config.js";
 import type { RuntimeCandidate } from "./runtime-candidates.js";
 import { getRuntimeCandidates } from "./runtime-candidates.js";
-import { calculateWeightedDifficulty, selectModel } from "../../application/use-cases/select-model.js";
+import { calculateWeightedDifficulty, isSubstantialReview, selectModel, type ReviewScope } from "../../application/use-cases/select-model.js";
+import { getReviewScope } from "./review-scope.js";
 import type { TaskAssessment } from "../../application/models/task-assessment.js";
 import { prepareContext } from "../../application/use-cases/prepare-context.js";
 import { assessTask } from "../../application/use-cases/assess-task.js";
@@ -15,11 +16,13 @@ import { formatAssessmentStatus, ROUTER_AUTO_STATUS_KEY, ROUTER_STATUS_KEY, ROUT
 export interface RoutingAdapters {
   readonly loadConfig: (ctx: ExtensionContext) => Promise<ModelRouterConfig>;
   readonly candidates: (ctx: ExtensionContext, event: BeforeAgentStartEvent, config: ModelRouterConfig, signal?: AbortSignal) => Promise<RuntimeCandidate[]>;
+  readonly reviewScope?: (cwd: string, base: string, signal: AbortSignal) => Promise<ReviewScope>;
 }
 
 const defaultRoutingAdapters: RoutingAdapters = {
   loadConfig: ctx => loadModelRouterConfig(ctx.cwd, ctx.isProjectTrusted()),
   candidates: (ctx, event, config, signal) => getRuntimeCandidates(config.options ?? [], ctx, event, signal),
+  reviewScope: getReviewScope,
 };
 
 /** Provider and host adapters may be supplied for hook tests; production uses Pi and TypeSafe. */
@@ -31,7 +34,7 @@ export function createAssessmentExtension(
   const routingTimeoutMs = options.routingTimeoutMs ?? 15_000;
   if (!Number.isSafeInteger(routingTimeoutMs) || routingTimeoutMs <= 0) throw new Error("Invalid routing deadline.");
   return (pi) => {
-    let next: { intent: "assess" | "route"; recipient: JudgmentBackend["recipient"] } | null = null;
+    let next: { intent: "assess" | "route"; recipient: JudgmentBackend["recipient"]; base?: string } | null = null;
     let automatic: { recipient: JudgmentBackend["recipient"]; sessionId: string | undefined } | null = null;
     let activeRun: AbortController | null = null;
     let routerSwitch: { provider: string; id: string } | null = null;
@@ -96,26 +99,30 @@ export function createAssessmentExtension(
     pi.registerCommand("model-router-route", {
       description: "Consent to assess the next prompt with Jev and select a configured model (one prompt only)",
       handler: async (args, ctx) => {
-        switch (args.trim()) {
-          case "once": {
-            reset(ctx);
-            const run = generation;
-            try {
-              const backend = await resolveBackend(ctx);
-              if (generation !== run) break;
-              next = { intent: "route", recipient: backend.recipient };
-              notify(ctx, `Next prompt only: selected, unredacted conversation and current prompt may be sent via ${backend.recipient} to Jev; an eligible configured model and thinking level may be selected. Uncalibrated policy.`, "warning");
-            } catch {
-              if (generation === run) credentialsUnavailable(ctx, "Routing");
-            }
-            break;
-          }
-          case "off":
-            reset(ctx);
-            notify(ctx, "Model-router one-shot and automatic consent revoked.", "info");
-            break;
-          default:
-            notify(ctx, "Usage: /model-router-route once | off. Default is off. 'once' may send unredacted context via OpenRouter or TypeSafe and switch the model for the next prompt.", "info");
+        const input = args.trim();
+        if (input === "off") {
+          reset(ctx);
+          notify(ctx, "Model-router one-shot and automatic consent revoked.", "info");
+          return;
+        }
+        const match = /^once(?: base=([a-zA-Z0-9][a-zA-Z0-9/_.-]*))?$/.exec(input);
+        if (!match || (match[1] && (match[1].includes("..") || match[1].endsWith(".lock")))) {
+          notify(ctx, "Usage: /model-router-route once [base=<ref>] | off. An explicit base measures local review scope for the next prompt only.", "info");
+          return;
+        }
+        if (match[1] && !ctx.isProjectTrusted()) {
+          notify(ctx, "Review preflight requires a trusted project. No consent granted.", "warning");
+          return;
+        }
+        reset(ctx);
+        const run = generation;
+        try {
+          const backend = await resolveBackend(ctx);
+          if (generation !== run) return;
+          next = { intent: "route", recipient: backend.recipient, ...(match[1] ? { base: match[1] } : {}) };
+          notify(ctx, `Next prompt only: selected, unredacted conversation and current prompt may be sent via ${backend.recipient} to Jev; an eligible model may be selected. ${match[1] ? "Local Git review scope will be measured without sending file paths or contents to Jev." : "Uncalibrated policy."}`, "warning");
+        } catch {
+          if (generation === run) credentialsUnavailable(ctx, "Routing");
         }
       },
     });
@@ -269,6 +276,25 @@ export function createAssessmentExtension(
             return;
           }
         }
+        let reviewScope: ReviewScope | undefined;
+        if (intent === "route" && pending.base) {
+          if (!ctx.isProjectTrusted() || !config?.policy?.substantialReview || !routing.reviewScope) {
+            notify(ctx, "Review preflight unavailable; no assessment sent and model unchanged.", "warning");
+            return;
+          }
+          try {
+            reviewScope = await wait(() => routing.reviewScope!(ctx.cwd, pending.base!, runController.signal));
+          } catch {
+            if (runController.signal.aborted) throw new Error("Routing interrupted.");
+            notify(ctx, "Review preflight could not measure the local diff; no assessment sent and model unchanged.", "warning");
+            return;
+          }
+          if (!isCurrent()) return;
+          if (!ctx.isProjectTrusted()) {
+            notify(ctx, "Review preflight stopped: project trust changed. Current model unchanged.", "warning");
+            return;
+          }
+        }
         const snapshot = mapContext(event, ctx.sessionManager);
         const prepared = prepareContext(snapshot);
         if (!isCurrent()) return;
@@ -294,13 +320,21 @@ export function createAssessmentExtension(
           ? calculateWeightedDifficulty(assessment, config.policy) : undefined;
         setStatus(ctx, formatAssessmentStatus(assessment, weightedDifficulty));
         if (intent === "assess") return;
-        const decision = selectModel(assessment, candidates.map(c => c.option), config!.policy!);
+        if (reviewScope && assessment.workCategory.choice === "review" &&
+            config!.policy!.substantialReview && isSubstantialReview(reviewScope, config!.policy!.substantialReview)) {
+          notify(ctx, `Substantial review scope (${reviewScope.changedFiles} files, ${reviewScope.changedLines} changed lines, ${reviewScope.directories} directories): configured review tier applied.`, "info");
+        }
+        const decision = selectModel(assessment, candidates.map(c => c.option), config!.policy!, reviewScope);
         if (decision.status === "unchanged") {
           notify(ctx, `Model-router route unchanged (${decision.reason}); no model switched.`, "warning");
           return;
         }
         const selected = candidates.find(c => c.option.id === decision.option.id)!;
         if (!isCurrent()) return;
+        if (pending.base && !ctx.isProjectTrusted()) {
+          notify(ctx, "Review routing stopped: project trust changed. Current model unchanged.", "warning");
+          return;
+        }
         switchStarted = true;
         switchMarker = { provider: selected.model.provider, id: selected.model.id };
         routerSwitch = switchMarker;

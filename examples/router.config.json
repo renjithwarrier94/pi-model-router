@@ -11,7 +11,13 @@
       { "difficulty": 0.5, "score": 60 },
       { "difficulty": 1, "score": 75 }
     ],
-    "maxMissingCriticalEvidenceProbability": 0.7
+    "maxMissingCriticalEvidenceProbability": 0.7,
+    "substantialReview": {
+      "minChangedFiles": 8,
+      "minChangedLines": 250,
+      "minDirectories": 3,
+      "allowedOptionIds": ["sonnet-medium", "sonnet-high"]
+    }
   },
   "options": [
     {

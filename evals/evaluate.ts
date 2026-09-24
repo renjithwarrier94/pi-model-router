@@ -1,7 +1,7 @@
 import type { ModelRouterConfig } from "../src/adapters/config/config-schema.js";
 import type { TaskAssessment } from "../src/application/models/task-assessment.js";
 import type { WorkCategory } from "../src/application/models/task-assessment.js";
-import { selectModel, type SelectionDecision } from "../src/application/use-cases/select-model.js";
+import { selectModel, type ReviewScope, type SelectionDecision } from "../src/application/use-cases/select-model.js";
 
 export type ExpectedDecision =
   | { readonly status: "selected" | "threshold-unmet"; readonly optionId: string }
@@ -17,6 +17,8 @@ export type EvaluationCase = {
   readonly assessment: TaskAssessment;
   /** Simulated Pi eligibility, not a runtime check. Omitted means all configured options. */
   readonly eligibleOptionIds?: readonly string[];
+  /** Aggregate local Git metadata, never paths or diff content. */
+  readonly reviewScope?: ReviewScope;
 } & (
   | { readonly source: "synthetic" }
   | { readonly source: "recorded-jev"; readonly recording: {
@@ -51,7 +53,7 @@ export function evaluateCases(cases: readonly EvaluationCase[], config: ModelRou
       if (!option) throw new Error(`Unknown eligible option in ${testCase.id}: ${id}`);
       return option;
     });
-    const decision = selectModel(testCase.assessment, eligible, config.policy!);
+    const decision = selectModel(testCase.assessment, eligible, config.policy!, testCase.reviewScope);
     const actual: ExpectedDecision = decision.status === "unchanged"
       ? { status: "unchanged", reason: decision.reason }
       : { status: decision.status, optionId: decision.option.id };

@@ -4,6 +4,15 @@ export interface DifficultyScorePoint {
   readonly score: number;
 }
 
+export interface SubstantialReviewPolicy {
+  /** Crossing any threshold marks an explicitly scoped review as substantial. */
+  readonly minChangedFiles: number;
+  readonly minChangedLines: number;
+  readonly minDirectories: number;
+  /** Explicit quality tier; not derived from coding benchmark scores. */
+  readonly allowedOptionIds: readonly string[];
+}
+
 export interface RoutingPolicy {
   readonly weights: {
     readonly reasoningDemand: number;
@@ -14,4 +23,5 @@ export interface RoutingPolicy {
   readonly difficultyToDeepSweScore: readonly DifficultyScorePoint[];
   /** At or above this P(yes), leave the model unchanged. */
   readonly maxMissingCriticalEvidenceProbability: number;
+  readonly substantialReview?: SubstantialReviewPolicy;
 }

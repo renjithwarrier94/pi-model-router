@@ -23,12 +23,14 @@ function assessment(category: WorkCategory, [reasoning, scope, integration]: rea
 function sample(
   id: string, prompt: string, category: WorkCategory,
   levels: readonly [0 | 1 | 2, 0 | 1 | 2, 0 | 1 | 2], expectedDecision: ExpectedDecision,
-  options?: { readonly missing?: number; readonly eligibleOptionIds?: readonly string[] },
+  options?: { readonly missing?: number; readonly eligibleOptionIds?: readonly string[];
+    readonly reviewScope?: { readonly changedFiles: number; readonly changedLines: number; readonly directories: number } },
 ): EvaluationCase {
   return {
     id, prompt, source: "synthetic", expectedCategory: category, expectedDecision,
     assessment: assessment(category, levels, options?.missing),
     ...(options?.eligibleOptionIds ? { eligibleOptionIds: options.eligibleOptionIds } : {}),
+    ...(options?.reviewScope ? { reviewScope: options.reviewScope } : {}),
   };
 }
 
@@ -40,6 +42,15 @@ export const syntheticCases: readonly EvaluationCase[] = [
   sample("implement-system", "Migrate shared contracts across the whole application.", "implement", [2, 2, 2], { status: "threshold-unmet", optionId: "sonnet-high" }),
   sample("diagnose-interactions", "Find why two interacting modules disagree about state.", "diagnose", [1, 2, 1], { status: "selected", optionId: "sonnet-medium" }),
   sample("review-small", "Review this isolated function for correctness.", "review", [1, 1, 1], { status: "selected", optionId: "gpt-general" }),
+  sample("review-branch-large", "Review a broad branch diff.", "review", [0, 1, 0],
+    { status: "selected", optionId: "sonnet-medium" },
+    { reviewScope: { changedFiles: 8, changedLines: 100, directories: 2 } }),
+  sample("review-branch-cross-directory", "Review changes across related modules.", "review", [0, 1, 0],
+    { status: "selected", optionId: "sonnet-medium" },
+    { reviewScope: { changedFiles: 3, changedLines: 80, directories: 3 } }),
+  sample("review-branch-tier-unavailable", "Review a broad branch diff with restricted models.", "review", [0, 1, 0],
+    { status: "unchanged", reason: "review-tier-unavailable" },
+    { reviewScope: { changedFiles: 8, changedLines: 100, directories: 2 }, eligibleOptionIds: ["gpt-general"] }),
   sample("design-system", "Design a migration of shared interfaces across consumers.", "design", [2, 1, 2], { status: "threshold-unmet", optionId: "sonnet-high" }),
   sample("research-simple", "Find a public reference for this term.", "research", [0, 1, 1], { status: "selected", optionId: "gpt-general" }),
   sample("other-clear", "Translate this short sentence into French.", "other", [0, 0, 0], { status: "selected", optionId: "gpt-general" }),

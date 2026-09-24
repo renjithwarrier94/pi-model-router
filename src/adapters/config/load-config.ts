@@ -7,11 +7,16 @@ import { parseModelRouterConfigJson, type ModelRouterConfig } from "./config-sch
 export async function loadModelRouterConfig(cwd: string, projectTrusted: boolean): Promise<ModelRouterConfig> {
   const global = await readOptionalConfig(join(getAgentDir(), "model-router.json"));
   const project = projectTrusted ? await readOptionalConfig(join(cwd, ".pi", "model-router.json")) : undefined;
-  return {
+  const merged: ModelRouterConfig = {
     version: 1,
     ...(project?.options !== undefined ? { options: project.options } : global?.options !== undefined ? { options: global.options } : {}),
     ...(project?.policy !== undefined ? { policy: project.policy } : global?.policy !== undefined ? { policy: global.policy } : {}),
   };
+  if (merged.policy?.substantialReview && !merged.policy.substantialReview.allowedOptionIds.every(id =>
+    merged.options?.some(option => option.id === id))) {
+    throw new Error("Model router review policy references unavailable options.");
+  }
+  return merged;
 }
 
 async function readOptionalConfig(path: string): Promise<ModelRouterConfig | undefined> {

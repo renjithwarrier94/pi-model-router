@@ -10,7 +10,7 @@ const config = parseModelRouterConfigJson(readFileSync(new URL("../../../example
 
 test("synthetic examples cover categories, gate, unavailable models, and fallback", () => {
   const results = evaluateCases(syntheticCases, config);
-  assert.equal(results.length, 14);
+  assert.equal(results.length, 17);
   assert.ok(results.every(result => result.source === "synthetic" && result.categoryMatches && result.decisionMatches));
   assert.deepEqual(new Set(syntheticCases.map(entry => entry.expectedCategory)),
     new Set(["explain", "implement", "diagnose", "review", "design", "research", "other", "unclear"]));
@@ -53,6 +53,9 @@ test("JSON cases validate scores, provenance, and recorded question version", ()
     ...sample.assessment, reasoningDemand: { type: "score", score: 2, probabilities: [1, 0, 0], confidence: 1 },
   } }])), /reasoningDemand.score/);
   assert.throws(() => parseEvaluationCasesJson(JSON.stringify([{ ...sample, eligibleOptionIds: "all" }])), /eligibleOptionIds/);
+  assert.throws(() => parseEvaluationCasesJson(JSON.stringify([{ ...sample, reviewScope: {
+    changedFiles: -1, changedLines: 1, directories: 1,
+  } }])), /reviewScope.changedFiles/);
 });
 
 test("recorded assessments can be compared to independent expected categories", () => {
