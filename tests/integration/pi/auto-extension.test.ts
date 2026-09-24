@@ -38,6 +38,8 @@ function harness(overrides: {
   readonly routingTimeoutMs?: number;
   readonly unknownUsage?: boolean;
   readonly initialLevel?: string;
+  readonly deferredThinkingEvents?: boolean;
+  readonly selectedLevel?: ModelOption["thinkingLevel"];
 } = {}) {
   const handlers = new Map<string, (...args: any[]) => unknown>();
   const commands = new Map<string, (arg: string, ctx: ExtensionContext) => Promise<void>>();
@@ -53,7 +55,14 @@ function harness(overrides: {
   let calls = 0;
   let switches = 0;
   let thinkingCalls = 0;
+  const pendingThinkingEvents: (() => Promise<unknown>)[] = [];
+  const emitThinking = (level: string, previousLevel: string) => {
+    const emit = () => Promise.resolve(handlers.get("thinking_level_select")?.({ level, previousLevel }, ctx));
+    if (overrides.deferredThinkingEvents) pendingThinkingEvents.push(emit);
+    else void emit();
+  };
   const provider = overrides.provider ?? { async judge() { calls++; return { answers } as never; } };
+  const selectedOption = overrides.selectedLevel ? { ...option, thinkingLevel: overrides.selectedLevel } : option;
   const ctx = {
     sessionManager, hasUI: overrides.hasUI ?? true, mode: "tui",
     signal: undefined,
@@ -81,7 +90,7 @@ function harness(overrides: {
       if (currentLevel !== "off") {
         const previousLevel = currentLevel;
         currentLevel = "off"; // Pi may clamp thinking while changing models.
-        void handlers.get("thinking_level_select")?.({ level: "off", previousLevel }, ctx);
+        emitThinking("off", previousLevel);
       }
       await handlers.get("model_select")?.({ source: "set", model, previousModel }, ctx);
       return true;
@@ -92,7 +101,7 @@ function harness(overrides: {
       if (level !== currentLevel) {
         const previousLevel = currentLevel;
         currentLevel = level;
-        void handlers.get("thinking_level_select")?.({ level, previousLevel }, ctx);
+        emitThinking(level, previousLevel);
       }
     },
     getThinkingLevel() { return currentLevel; },
@@ -100,13 +109,16 @@ function harness(overrides: {
     sendMessage() { assert.fail("no model-facing router content"); },
   } as unknown as ExtensionAPI;
   createAssessmentExtension(overrides.resolveBackend ?? (async () => ({ provider, recipient: "OpenRouter" })), {
-    loadConfig: overrides.loadConfig ?? (async () => config),
+    loadConfig: overrides.loadConfig ?? (async () => ({ ...config, options: [selectedOption] })),
     candidates: async () => overrides.unknownUsage ? [] :
-      [{ option, model: { provider: option.provider, id: option.model } as never }],
+      [{ option: selectedOption, model: { provider: option.provider, id: option.model } as never }],
   }, overrides.routingTimeoutMs === undefined ? {} : { routingTimeoutMs: overrides.routingTimeoutMs })(pi);
   return {
-    notices, statuses, widgets, confirmations, ctx,
+    notices, statuses, widgets, confirmations, ctx, sessionManager,
     calls: () => calls, switches: () => switches, thinkingCalls: () => thinkingCalls,
+    async flushThinkingEvents() {
+      for (const emit of pendingThinkingEvents.splice(0)) await emit();
+    },
     setTrusted(value: boolean) { trusted = value; },
     async manualModel(model: { provider: string; id: string }) {
       const previousModel = activeModel;
@@ -183,7 +195,7 @@ test("revocation while confirmation is pending cannot enable automatic routing l
   assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, undefined);
 });
 
-test("off aborts an in-flight assessment and session/tree changes revoke automatic routing", async () => {
+test("off aborts an in-flight assessment and new sessions revoke automatic routing", async () => {
   let aborted = false;
   let started: (() => void) | undefined;
   const start = new Promise<void>(resolve => { started = resolve; });
@@ -201,12 +213,87 @@ test("off aborts an in-flight assessment and session/tree changes revoke automat
   assert.equal(aborted, true);
   assert.equal(h.switches(), 0);
   assert.doesNotMatch(JSON.stringify(h.notices), /PRIVATE_/);
-  for (const event of ["session_start", "session_tree", "session_shutdown"]) {
+  for (const event of ["session_start", "session_shutdown"]) {
     await h.command("model-router-auto", "on");
     await h.event(event);
     await h.run("PRIVATE_AFTER_SESSION_CHANGE");
     assert.equal(h.switches(), 0);
   }
+});
+
+test("tree navigation keeps consent in the same session and cancels stale work", async () => {
+  const h = harness();
+  await h.command("model-router-auto", "on");
+  await h.run("first branch");
+  const sessionId = h.sessionManager.getSessionId();
+  const previousLeaf = h.sessionManager.getLeafId();
+  h.sessionManager.resetLeaf();
+  assert.notEqual(h.sessionManager.getLeafId(), previousLeaf);
+  assert.equal(h.sessionManager.getSessionId(), sessionId);
+  await h.event("session_tree");
+  assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, "Router auto: OpenRouter");
+  assert.equal(h.widgets.at(-1)?.content, undefined);
+  await h.run("second branch");
+  assert.equal(h.calls(), 2);
+  assert.equal(h.switches(), 2);
+  assert.equal(h.confirmations.length, 1);
+
+  let begun: (() => void) | undefined;
+  let wasAborted = false;
+  let judgments = 0;
+  const waiting = harness({ provider: { async judge(_request, opts) {
+    judgments++;
+    if (judgments > 1) return { answers } as never;
+    begun?.();
+    return new Promise<never>((_resolve, reject) => opts?.signal?.addEventListener("abort", () => {
+      wasAborted = true; reject(new Error("PRIVATE_ABORT"));
+    }, { once: true }));
+  } } });
+  const started = new Promise<void>(resolve => { begun = resolve; });
+  await waiting.command("model-router-auto", "on");
+  const oldBranch = waiting.run("PRIVATE_OLD_BRANCH");
+  await started;
+  waiting.sessionManager.appendMessage({ role: "user", content: "alternate branch", timestamp: 0 });
+  await waiting.event("session_tree");
+  await oldBranch;
+  assert.equal(wasAborted, true);
+  assert.equal(waiting.switches(), 0);
+  await waiting.run("PRIVATE_NEW_BRANCH");
+  assert.equal(waiting.switches(), 1);
+  assert.equal(waiting.confirmations.length, 1);
+  assert.doesNotMatch(JSON.stringify(waiting.notices), /PRIVATE_/);
+});
+
+test("tree navigation during an in-flight model switch fails closed", async () => {
+  let finish: ((result: boolean) => void) | undefined;
+  const h = harness({ switchModel: () => new Promise<boolean>(done => { finish = done; }) });
+  await h.command("model-router-auto", "on");
+  const pending = h.run("review before navigation");
+  await new Promise<void>(done => setImmediate(done));
+  assert.ok(finish);
+  await h.event("session_tree");
+  await pending;
+  assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, undefined);
+  assert.match(h.notices.at(-1) ?? "", /navigation during a model switch/);
+  finish(true);
+  await new Promise<void>(done => setImmediate(done));
+  await h.run("after navigation");
+  assert.equal(h.switches(), 1);
+});
+
+test("late router thinking events do not revoke auto, but a later manual level change does", async () => {
+  const h = harness({ initialLevel: "high", selectedLevel: "medium", deferredThinkingEvents: true });
+  await h.command("model-router-auto", "on");
+  await h.run("first");
+  await h.event("session_tree");
+  await h.flushThinkingEvents(); // Pi may deliver both router-owned level events after switching and navigation.
+  assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, "Router auto: OpenRouter");
+  await h.run("second");
+  assert.equal(h.calls(), 2);
+  await h.manualThinking("high");
+  assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, undefined);
+  await h.run("after manual change");
+  assert.equal(h.calls(), 2);
 });
 
 test("routing config removal after consent revokes auto without contacting Jev", async () => {

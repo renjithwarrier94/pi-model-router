@@ -9,10 +9,12 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/unit/*/*.test.ts tests/integration/*/*.test.ts",
-    "eval:offline": "tsx evals/run.ts"
+    "eval:offline": "tsx evals/run.ts",
+    "config:validate": "tsx scripts/validate-config.ts"
   },
   "dependencies": {
-    "@typesafe-ai/sdk": "^0.6.0"
+    "@typesafe-ai/sdk": "^0.6.0",
+    "tsx": "^4.23.15"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -21,13 +23,15 @@
   "pi": {
     "extensions": [
       "./src/index.ts"
+    ],
+    "skills": [
+      "./skills/model-router-config"
     ]
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^0.87.0",
     "@earendil-works/pi-coding-agent": "0.87.0",
     "@types/node": "^22.20.4",
-    "tsx": "^4.23.15",
     "typescript": "^5.9.3"
   }
 }

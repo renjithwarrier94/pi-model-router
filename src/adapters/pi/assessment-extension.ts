@@ -39,6 +39,10 @@ export function createAssessmentExtension(
     let activeRun: AbortController | null = null;
     let routerSwitch: { provider: string; id: string } | null = null;
     let lastRouted: { provider: string; id: string; level: string } | null = null;
+    // Pi emits thinking_level_select without awaiting it. Expected transitions may
+    // arrive after setModel/setThinkingLevel resolves and routerSwitch is cleared.
+    let expectedThinking: { previousLevel: string; level: string }[] = [];
+    let seenDuringSwitch: { previousLevel: string; level: string }[] = [];
     let generation = 0;
 
     const reset = (ctx: ExtensionContext) => {
@@ -46,6 +50,8 @@ export function createAssessmentExtension(
       next = null;
       automatic = null;
       lastRouted = null;
+      expectedThinking = [];
+      seenDuringSwitch = [];
       activeRun?.abort();
       activeRun = null;
       setAutoStatus(ctx);
@@ -53,18 +59,56 @@ export function createAssessmentExtension(
     };
     pi.on("session_start", (_event, ctx) => reset(ctx));
     pi.on("session_shutdown", (_event, ctx) => reset(ctx));
-    pi.on("session_tree", (_event, ctx) => reset(ctx));
+    pi.on("session_tree", (_event, ctx) => {
+      // Tree navigation changes the active branch, not the session to which the
+      // user consented. Invalidate old work, but retain the recipient-locked opt-in.
+      if (automatic && (automatic.sessionId !== ctx.sessionManager.getSessionId() || !ctx.isProjectTrusted())) {
+        reset(ctx);
+        notify(ctx, "Automatic routing stopped: session or project trust changed.", "warning");
+        return;
+      }
+      if (routerSwitch) {
+        reset(ctx); // An already-started switch cannot safely be reconciled with navigation.
+        notify(ctx, "Automatic routing stopped: tree navigation during a model switch; inspect Pi's active model.", "warning");
+        return;
+      }
+      generation += 1;
+      next = null;
+      activeRun?.abort();
+      activeRun = null;
+      lastRouted = ctx.model ? { provider: ctx.model.provider, id: ctx.model.id, level: pi.getThinkingLevel() } : null;
+      setStatus(ctx);
+      // Keep the auto indicator and expected late events from a completed switch.
+    });
     pi.on("model_select", (event, ctx) => {
-      if (!automatic || (event.source === "set" && routerSwitch &&
-          event.model.provider === routerSwitch.provider && event.model.id === routerSwitch.id)) return;
+      if (!automatic) return;
+      if (event.source === "restore" && automatic.sessionId === ctx.sessionManager.getSessionId()) {
+        lastRouted = { provider: event.model.provider, id: event.model.id, level: pi.getThinkingLevel() };
+        return;
+      }
+      if (event.source === "set" && routerSwitch &&
+          event.model.provider === routerSwitch.provider && event.model.id === routerSwitch.id) return;
       const inFlight = routerSwitch !== null;
       reset(ctx);
       notify(ctx, inFlight
         ? "Automatic routing stopped: manual model change during a router switch. Inspect Pi's active model; the pending switch may still complete."
         : "Automatic routing stopped: model changed outside the router. Enable it again to resume.", inFlight ? "warning" : "info");
     });
-    pi.on("thinking_level_select", (_event, ctx) => {
-      if (!automatic || routerSwitch) return;
+    pi.on("thinking_level_select", (event, ctx) => {
+      if (!automatic) return;
+      const matches = (change: { previousLevel: string; level: string }) =>
+        change.previousLevel === event.previousLevel && change.level === event.level;
+      if (routerSwitch) {
+        const expected = expectedThinking.findIndex(matches);
+        if (expected !== -1) expectedThinking.splice(expected, 1);
+        else seenDuringSwitch.push({ previousLevel: event.previousLevel, level: event.level });
+        return;
+      }
+      const index = expectedThinking.findIndex(matches);
+      if (index !== -1) {
+        expectedThinking.splice(index, 1);
+        return;
+      }
       reset(ctx);
       notify(ctx, "Automatic routing stopped: thinking level changed outside the router. Enable it again to resume.", "info");
     });
@@ -164,7 +208,7 @@ export function createAssessmentExtension(
             let confirmed = false;
             try {
               confirmed = await ctx.ui.confirm("Enable automatic routing for this session?",
-                `Future prompts and selected, unredacted user/assistant conversation text may be sent via ${backend.recipient} to Jev without further approval. Image counts and omission notices may be included, not image bytes or tool data. Jev may route each prompt to a configured coding model. The policy is uncalibrated; no results are stored by this extension. Use /model-router-auto off to stop. Consent ends on session/tree changes or extension reload.`,
+                `Future prompts and selected, unredacted user/assistant conversation text may be sent via ${backend.recipient} to Jev without further approval. Image counts and omission notices may be included, not image bytes or tool data. Jev may route each prompt to a configured coding model. The policy is uncalibrated; no results are stored by this extension. Use /model-router-auto off to stop. Consent continues across tree navigation within this session (including its other branches), but ends on a new session or extension reload.`,
                 { timeout: 30_000 });
             } catch {
               if (generation === run) notify(ctx, "Automatic routing consent unavailable. No consent granted.", "warning");
@@ -336,6 +380,15 @@ export function createAssessmentExtension(
           return;
         }
         switchStarted = true;
+        const levelBeforeSwitch = pi.getThinkingLevel();
+        seenDuringSwitch = [];
+        const rememberTransition = (previousLevel: string, level: string) => {
+          if (!automatic || previousLevel === level) return;
+          const seen = seenDuringSwitch.findIndex(change =>
+            change.previousLevel === previousLevel && change.level === level);
+          if (seen !== -1) seenDuringSwitch.splice(seen, 1);
+          else expectedThinking.push({ previousLevel, level });
+        };
         switchMarker = { provider: selected.model.provider, id: selected.model.id };
         routerSwitch = switchMarker;
         const success = await wait(() => pi.setModel(selected.model));
@@ -346,7 +399,10 @@ export function createAssessmentExtension(
           notify(ctx, "Model-router route failed: selected model unavailable. Current model unchanged.", "warning");
           return;
         }
+        const levelAfterModel = pi.getThinkingLevel();
+        rememberTransition(levelBeforeSwitch, levelAfterModel);
         pi.setThinkingLevel(selected.option.thinkingLevel);
+        rememberTransition(levelAfterModel, pi.getThinkingLevel());
         if (ctx.model?.provider !== selected.model.provider || ctx.model?.id !== selected.model.id ||
             pi.getThinkingLevel() !== selected.option.thinkingLevel) {
           if (automatic) reset(ctx);

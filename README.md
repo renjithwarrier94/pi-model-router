@@ -14,12 +14,14 @@ A Pi extension that uses Jev to assess a prompt and choose a configured coding m
    ```
    For a one-time trial instead, run `pi --extension /absolute/path/to/prompt-router/src/index.ts` from any directory.
 3. Set up Jev credentials: sign in to OpenRouter in Pi with `/login openrouter`, or set `OPENROUTER_API_KEY` or `TYPESAFE_API_KEY`. The router prefers Pi's OpenRouter credentials, then the OpenRouter environment variable, then TypeSafe.
-4. Create your routing config:
+4. Create your routing config (or invoke `/skill:model-router-config` with exact provider/model IDs and thinking levels to research and prepare one):
    ```bash
    mkdir -p ~/.pi/agent
    cp examples/router.config.json ~/.pi/agent/model-router.json
    ```
-   Edit the options to match **models available in your Pi** (`pi --list-models`). Set their provider, model ID, thinking level, cost, and capability scores. The example's scores, costs, and policy are illustrative, not calibrated. You can instead use `.pi/model-router.json` in a trusted project; see [configuration](docs/configuration.md) for precedence and format. Make sure Pi can access the coding models you configure.
+   Edit the options to match **models available in your Pi** (`pi --list-models`). Set their provider, model ID, thinking level, cost, and capability scores. The example's scores, costs, and policy are illustrative, not calibrated. Validate a complete config offline with `npm run config:validate -- /absolute/path/to/model-router.json`; it checks structure and one explicit generalist, **not** the truth of sourced benchmark or cost claims. You can instead use `.pi/model-router.json` in a trusted project; see [configuration](docs/configuration.md) for precedence and format. Make sure Pi can access the coding models you configure.
+
+The package includes the **manual-only** `/skill:model-router-config` skill (excluded from Pi's automatic skill prompt). Invoke it explicitly with the candidate models and thinking levels; it researches score/cost evidence, proposes categories, asks which exact option is the generalist if you have not chosen one, seeks approval before replacing a live config, and runs the validator. Run `/reload` after installation or skill edits to discover it.
 
 ## Commands in Pi
 

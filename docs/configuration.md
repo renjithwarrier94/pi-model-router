@@ -7,6 +7,8 @@ The model types, strict configuration parser, global/project file loader, projec
 - `src/domain/model-option.ts`: SDK-independent candidate, category, and thinking-level types.
 - `src/adapters/config/config-schema.ts`: versioned on-disk format and runtime validation.
 - `examples/router.config.json`: example inventory. **Scores and costs are illustrative, not benchmark claims.** Replace them with comparable measurements for each model/thinking combination.
+- `skills/model-router-config/SKILL.md`: optional packaged Pi skill for evidence-backed configuration authoring and user-selected generalist.
+- `scripts/validate-config.ts`: offline deterministic authoring validator; run `npm run config:validate -- /absolute/path/to/model-router.json`. It requires a complete config with a policy, nonempty options, and **exactly one** `["general"]` option, in addition to the strict schema. It does not check URLs, benchmark truth, current prices, or live Pi model availability. The router's runtime parser separately permits partial project override files.
 
 ## Locations and precedence
 

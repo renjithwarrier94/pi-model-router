@@ -4,7 +4,7 @@
 
 This document describes the architecture of a Pi model-routing extension. The judgment port/TypeSafe adapter, OpenRouter-or-direct credential resolution, conversation mapper/preparer, strict model and policy configuration, file loader, runtime candidate checks, pure selection use case, and Pi consent-gated one-shot and session-scoped automatic routing hook are implemented. **Persistent unattended routing and empirical calibration are not implemented.** An [offline synthetic regression suite](../evals/README.md) now covers policy outcomes without external calls; it is not a quality evaluation. See [TypeSafe adapter](typesafe-adapter.md), [Pi context mapping](pi-context.md), [configuration](configuration.md), and [Pi assessment and routing](pi-assessment.md).
 
-Empty directories contain `.gitkeep` placeholders. The layout below shows implemented files; later boundaries and evaluation tooling may be added as needed.
+An optional packaged authoring skill (`skills/model-router-config/SKILL.md`) guides evidence-gathering and user confirmation. Its offline validator (`scripts/validate-config.ts`) reuses the outer configuration parser and adds complete-file and generalist checks; neither performs model selection or changes the routing use case. Empty directories contain `.gitkeep` placeholders. The layout below shows implemented runtime files; later boundaries and evaluation tooling may be added as needed.
 
 ## Goal
 
@@ -77,7 +77,7 @@ examples/
   decisions/
 ```
 
-Minimal package metadata, TypeScript/test tooling, and an illustrative example router configuration are implemented; the README remains deferred. Compile-time contract tests live in `tests/unit/application/judgment-provider.type-test.ts` and mocked SDK transport tests in `tests/integration/typesafe/jev-judgment-provider.test.ts`.
+Package metadata, TypeScript/test tooling, an illustrative router configuration, README, and an optional configuration-authoring skill with deterministic validation are implemented. Compile-time contract tests live in `tests/unit/application/judgment-provider.type-test.ts` and mocked SDK transport tests in `tests/integration/typesafe/jev-judgment-provider.test.ts`.
 
 ## Layer responsibilities
 
@@ -139,7 +139,7 @@ The Pi adapter owns the host-specific lifecycle and side effects:
 - Resolve selected provider/model IDs and call Pi's model-switching API.
 - Distinguish proposed decisions from successfully applied switches.
 - Present all five judgments and policy-weighted demand via the dedicated TUI widget, RPC status, or non-UI stderr (`format-status.ts`) without placing diagnostics into model context.
-- Reset one-shot and session-only automatic consent on session/branch transitions and manual model/thinking changes; abort in-flight assessments on revocation. Bound each per-prompt routing attempt to 15 seconds. Pi records model and thinking-level changes as session state.
+- Reset consent on session changes and manual model/thinking changes; on same-session tree navigation, discard one-shot consent and stale in-flight work while retaining auto consent (unless a Pi model switch is already in progress). Track delayed router-owned thinking-level events so they do not resemble manual changes. Bound each per-prompt routing attempt to 15 seconds. Pi records model and thinking-level changes as session state.
 
 Only this adapter and the outer entry/wiring modules may reference Pi APIs. The core must never receive an `ExtensionContext`, session manager, or Pi model object.
 
