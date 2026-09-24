@@ -36,3 +36,7 @@ The package includes the **manual-only** `/skill:model-router-config` skill (exc
 `/model-router-assess off` and `/model-router-route off` also cancel permission. One-shot commands replace auto mode; a manual model or thinking-level change stops auto mode. To resume, run `/model-router-auto on` and confirm again. A one-shot route changes the active Pi model until you change it again.
 
 **Privacy:** With consent, Jev receives selected **unredacted** user/assistant text and the current prompt via OpenRouter or TypeSafe. Auto mode covers future prompts without asking again. Do not use it for sensitive conversations. Details and limits: [Pi assessment and routing](docs/pi-assessment.md).
+
+## License
+
+[MIT](LICENSE).
