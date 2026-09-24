@@ -2,6 +2,10 @@
 
 A Pi extension that uses Jev to assess a prompt and choose a configured coding model. Routing is off by default.
 
+With your consent, Jev judges the task category, reasoning demand, dependency scope, context-integration demand, and probability of missing critical evidence. The router combines demand scores with your policy and picks the cheapest eligible configured model that meets its required capability score; unclear tasks or insufficient evidence leave the current model unchanged.
+
+Status example: `Router: research R0.36 S0.94 I0.61 M36% W0.29` — **R** reasoning, **S** dependency scope, **I** context integration (each 0–2); **M** probability of missing critical evidence; **W** weighted, normalized demand (0–1).
+
 ## Set up
 
 1. Clone this repository. From its root, install dependencies and run the following setup commands:
