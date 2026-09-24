@@ -43,6 +43,7 @@ function harness(overrides: {
   const commands = new Map<string, (arg: string, ctx: ExtensionContext) => Promise<void>>();
   const notices: string[] = [];
   const statuses: { key: string; text: string | undefined }[] = [];
+  const widgets: { key: string; content: string[] | undefined }[] = [];
   const confirmations: string[] = [];
   const sessionManager = SessionManager.inMemory();
   let trusted = overrides.trusted ?? true;
@@ -62,6 +63,7 @@ function harness(overrides: {
     ui: {
       notify(message: string) { notices.push(message); },
       setStatus(key: string, text: string | undefined) { statuses.push({ key, text }); },
+      setWidget(key: string, content: string[] | undefined) { widgets.push({ key, content }); },
       async confirm(_title: string, message: string) { confirmations.push(message); return confirm(message); },
     },
   } as unknown as ExtensionContext;
@@ -103,7 +105,7 @@ function harness(overrides: {
       [{ option, model: { provider: option.provider, id: option.model } as never }],
   }, overrides.routingTimeoutMs === undefined ? {} : { routingTimeoutMs: overrides.routingTimeoutMs })(pi);
   return {
-    notices, statuses, confirmations, ctx,
+    notices, statuses, widgets, confirmations, ctx,
     calls: () => calls, switches: () => switches, thinkingCalls: () => thinkingCalls,
     setTrusted(value: boolean) { trusted = value; },
     async manualModel(model: { provider: string; id: string }) {
@@ -138,8 +140,8 @@ test("automatic routing needs one explicit confirmation, then routes subsequent 
   await h.run("PRIVATE_SECOND");
   assert.equal(h.calls(), 2);
   assert.equal(h.switches(), 2);
-  assert.equal(h.statuses.at(-1)?.text, "Router: explain R0.00 S0.00 I0.00 M0% W0.00");
-  assert.doesNotMatch(JSON.stringify(h.notices) + JSON.stringify(h.statuses), /PRIVATE_/);
+  assert.deepEqual(h.widgets.at(-1)?.content, ["Router: explain R0.00 S0.00 I0.00 M0% W0.00"]);
+  assert.doesNotMatch(JSON.stringify(h.notices) + JSON.stringify(h.statuses) + JSON.stringify(h.widgets), /PRIVATE_/);
   await h.command("model-router-auto", "off");
   assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, undefined);
   await h.run("PRIVATE_AFTER_OFF");

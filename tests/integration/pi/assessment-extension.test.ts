@@ -21,18 +21,21 @@ const answers = {
   missingCriticalEvidence: { type: "noul", probability: 0.4 },
 };
 
-function harness(provider: JudgmentProvider, hasUI = true, resolve?: () => Promise<JudgmentBackend>, config?: RoutingAdapters["loadConfig"]) {
+function harness(provider: JudgmentProvider, hasUI = true, resolve?: () => Promise<JudgmentBackend>, config?: RoutingAdapters["loadConfig"], mode: ExtensionContext["mode"] = "tui") {
   const handlers = new Map<string, (...params: any[]) => unknown>();
   let command: ((args: string, ctx: ExtensionContext) => Promise<void>) | undefined;
   const notifications: { message: string; level: string }[] = [];
   const statuses: { key: string; text: string | undefined }[] = [];
+  const widgets: { key: string; content: string[] | undefined }[] = [];
   const sessionManager = SessionManager.inMemory();
   const context = {
     sessionManager,
     hasUI,
+    mode,
     ui: {
       notify(message: string, level: string) { notifications.push({ message, level }); },
       setStatus(key: string, text: string | undefined) { statuses.push({ key, text }); },
+      setWidget(key: string, content: string[] | undefined) { widgets.push({ key, content }); },
     },
     signal: undefined as AbortSignal | undefined,
   } as unknown as ExtensionContext;
@@ -58,7 +61,7 @@ function harness(provider: JudgmentProvider, hasUI = true, resolve?: () => Promi
     await command(args, context);
   };
   const fire = async (event: string) => handlers.get(event)?.({}, context);
-  return { run, invoke, fire, context, sessionManager, notifications, statuses };
+  return { run, invoke, fire, context, sessionManager, notifications, statuses, widgets };
 }
 
 test("disabled by default and invalid command arguments never send conversation", async () => {
@@ -89,7 +92,7 @@ test("once consents for exactly one next prompt, sends selected history through 
   assert.match(request.context, /PRIVATE_CURRENT/);
   assert.match(request.context, /PRIVATE_HISTORY/);
   assert.equal(Object.keys(request.questions).length, 5);
-  assert.deepEqual(h.statuses.at(-1), { key: "model-router", text: "Router: implement R1.25 S1.00 I0.00 M40% W–" });
+  assert.deepEqual(h.widgets.at(-1), { key: "model-router-result", content: ["Router: implement R1.25 S1.00 I0.00 M40% W–"] });
   assert.doesNotMatch(JSON.stringify(h.notifications), /PRIVATE_/);
 });
 
@@ -102,7 +105,7 @@ test("assessment-only displays policy-weighted score when configured", async () 
     } }));
   await h.invoke("once");
   await h.run("prompt");
-  assert.equal(h.statuses.at(-1)?.text, "Router: implement R1.25 S1.00 I0.00 M40% W0.44");
+  assert.deepEqual(h.widgets.at(-1)?.content, ["Router: implement R1.25 S1.00 I0.00 M40% W0.44"]);
 });
 
 test("assessment stays visible without policy even if config cannot load, and clears on session changes", async () => {
@@ -110,9 +113,9 @@ test("assessment stays visible without policy even if config cannot load, and cl
     async () => { throw Error("PRIVATE_CONFIG"); });
   await h.invoke("once");
   await h.run("prompt");
-  assert.equal(h.statuses.at(-1)?.text, "Router: implement R1.25 S1.00 I0.00 M40% W–");
+  assert.deepEqual(h.widgets.at(-1)?.content, ["Router: implement R1.25 S1.00 I0.00 M40% W–"]);
   await h.fire("session_tree");
-  assert.deepEqual(h.statuses.at(-1), { key: "model-router", text: undefined });
+  assert.deepEqual(h.widgets.at(-1), { key: "model-router-result", content: undefined });
   assert.doesNotMatch(JSON.stringify(h.notifications), /PRIVATE_/);
 });
 
@@ -157,7 +160,7 @@ test("stale asynchronous answers are ignored after off or session replacement", 
   finish({ answers });
   await pending;
   assert.ok(!h.notifications.some(n => n.message.includes("reasoning")));
-  assert.ok(!h.statuses.some(s => s.text?.includes("R1.25")));
+  assert.ok(!h.widgets.some(s => s.content?.some(line => line.includes("R1.25"))));
 });
 
 test("missing credentials fail at once and never grant consent", async () => {
@@ -230,5 +233,27 @@ test("no UI can still assess without logging or injecting data", async () => {
   await h.run("prompt");
   assert.equal(calls, 1);
   assert.deepEqual(h.notifications, []);
-  assert.deepEqual(h.statuses, []);
+  assert.deepEqual(h.widgets, []);
+});
+
+test("RPC mode publishes the same result through its extension status channel", async () => {
+  const h = harness({ async judge() { return { answers } as never; } }, true, undefined, undefined, "rpc");
+  await h.invoke("once");
+  await h.run("prompt");
+  assert.deepEqual(h.statuses.at(-1), { key: "model-router", text: "Router: implement R1.25 S1.00 I0.00 M40% W–" });
+  assert.deepEqual(h.widgets, []);
+});
+
+test("print mode writes the result to stderr without changing stdout", async () => {
+  const h = harness({ async judge() { return { answers } as never; } }, false, undefined, undefined, "print");
+  let stderr = "";
+  const originalWrite = process.stderr.write;
+  process.stderr.write = ((chunk: unknown) => { stderr += String(chunk); return true; }) as typeof process.stderr.write;
+  try {
+    await h.invoke("once");
+    await h.run("prompt");
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+  assert.equal(stderr, "Router: implement R1.25 S1.00 I0.00 M40% W–\n");
 });

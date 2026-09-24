@@ -10,7 +10,7 @@ import { assessTask } from "../../application/use-cases/assess-task.js";
 import { resolveJudgmentBackend, type JudgmentBackend } from "./resolve-judgment-provider.js";
 import { JudgmentProviderError } from "../../application/ports/judgment-provider.js";
 import { mapContext } from "./map-context.js";
-import { formatAssessmentStatus, ROUTER_AUTO_STATUS_KEY, ROUTER_STATUS_KEY } from "./format-status.js";
+import { formatAssessmentStatus, ROUTER_AUTO_STATUS_KEY, ROUTER_STATUS_KEY, ROUTER_WIDGET_KEY } from "./format-status.js";
 
 export interface RoutingAdapters {
   readonly loadConfig: (ctx: ExtensionContext) => Promise<ModelRouterConfig>;
@@ -356,7 +356,17 @@ function credentialsUnavailable(ctx: ExtensionContext, operation: string): void 
 }
 
 function setStatus(ctx: ExtensionContext, text?: string): void {
-  if (ctx.hasUI) ctx.ui.setStatus(ROUTER_STATUS_KEY, text);
+  if (ctx.mode === "tui") {
+    if (!ctx.hasUI) return;
+    // Keep the result independent of whichever footer a UI extension installs.
+    ctx.ui.setStatus(ROUTER_STATUS_KEY, undefined);
+    ctx.ui.setWidget(ROUTER_WIDGET_KEY, text ? [text] : undefined, { placement: "aboveEditor" });
+  } else if (ctx.mode === "rpc" && ctx.hasUI) {
+    ctx.ui.setStatus(ROUTER_STATUS_KEY, text);
+  } else if (text && (ctx.mode === "json" || ctx.mode === "print" || !ctx.hasUI)) {
+    // Preserve JSON/print stdout for their machine-readable or prompted output.
+    process.stderr.write(`${text}\n`);
+  }
 }
 
 function setAutoStatus(ctx: ExtensionContext, recipient?: JudgmentBackend["recipient"]): void {
