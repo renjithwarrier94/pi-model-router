@@ -41,6 +41,10 @@ The package includes the **manual-only** `/skill:model-router-config` skill (exc
 
 **Privacy:** With consent, Jev receives selected **unredacted** user/assistant text and the current prompt via OpenRouter or TypeSafe. Auto mode covers future prompts without asking again. Do not use it for sensitive conversations. Details and limits: [Pi assessment and routing](docs/pi-assessment.md).
 
+## Releases
+
+Pull requests run typecheck, tests, and offline evaluations. To publish, bump the package version, push a matching `v<version>` tag, and publish a GitHub release for that tag; the release workflow re-runs checks and publishes to npm with provenance. Configure npm trusted publishing for `renjithwarrier94/pi-model-router` and the `Publish to npm` workflow before the first release. Publishing directly from pull requests is intentionally disabled.
+
 ## License
 
 [MIT](LICENSE).
