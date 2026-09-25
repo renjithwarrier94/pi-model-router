@@ -1,6 +1,6 @@
 {
   "name": "pi-prompt-router",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Consent-based Jev-powered model routing extension for Pi",
   "license": "MIT",
   "repository": {
