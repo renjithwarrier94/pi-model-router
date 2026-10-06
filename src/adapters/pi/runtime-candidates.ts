@@ -1,6 +1,7 @@
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { Model } from "@earendil-works/pi-ai";
-import type { BeforeAgentStartEvent, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { BeforeAgentStartEvent, ExtensionContext, ToolInfo } from "@earendil-works/pi-coding-agent";
+import { estimateContextCapacity } from "./estimate-context-capacity.js";
 import type { ModelOption } from "../../domain/model-option.js";
 
 export interface RuntimeCandidate {
@@ -8,26 +9,57 @@ export interface RuntimeCandidate {
   readonly model: Model<any>;
 }
 
-/** Fail closed on missing capacity/auth information. This is a conservative capacity estimate, not tokenization. */
+export interface RuntimeCandidateResult {
+  readonly candidates: RuntimeCandidate[];
+  readonly capacitySource: "pi" | "estimated" | "unavailable";
+}
+
+/** List-only compatibility entry point for callers not displaying capacity diagnostics. */
 export async function getRuntimeCandidates(
   options: readonly ModelOption[], ctx: ExtensionContext, event: BeforeAgentStartEvent, signal?: AbortSignal,
+  getTools?: () => readonly ToolInfo[],
 ): Promise<RuntimeCandidate[]> {
-  if (signal?.aborted || ctx.signal?.aborted) return [];
-  const usage = ctx.getContextUsage();
-  if (usage?.tokens === null || usage?.tokens === undefined) return [];
-  const projection = ctx.sessionManager.buildSessionProjection();
-  let imageCount = event.images?.length ?? 0;
-  let maxImagesPerMessage = imageCount;
-  for (const entry of projection.entries) {
-    for (const message of entry.messages) {
-      if (!("content" in message) || !Array.isArray(message.content)) continue;
-      const count = message.content.filter(part => part.type === "image").length;
-      imageCount += count;
-      maxImagesPerMessage = Math.max(maxImagesPerMessage, count);
+  return (await inspectRuntimeCandidates(options, ctx, event, signal, getTools)).candidates;
+}
+
+/** Fail closed on unavailable capacity/auth information. All estimation is local. */
+export async function inspectRuntimeCandidates(
+  options: readonly ModelOption[], ctx: ExtensionContext, event: BeforeAgentStartEvent, signal?: AbortSignal,
+  getTools?: () => readonly ToolInfo[],
+): Promise<RuntimeCandidateResult> {
+  let capacitySource: RuntimeCandidateResult["capacitySource"] = "unavailable";
+  const empty = (): RuntimeCandidateResult => ({ candidates: [], capacitySource });
+  const aborted = () => signal?.aborted || ctx.signal?.aborted;
+  if (aborted()) return empty();
+  let capacityNeeded: number, imageCount = 0, maxImagesPerMessage = 0;
+  try {
+    const usage = ctx.getContextUsage();
+    const projection = ctx.sessionManager.buildSessionProjection();
+    if (usage?.tokens == null) {
+      if (!getTools) return empty();
+      const estimate = estimateContextCapacity(projection.messages, event, getTools(),
+        signal && ctx.signal ? AbortSignal.any([signal, ctx.signal]) : signal ?? ctx.signal);
+      if (estimate.status === "unavailable") return empty();
+      ({ capacityNeeded, imageCount, maxImagesPerMessage } = estimate);
+      capacitySource = "estimated";
+    } else {
+      if (!Number.isSafeInteger(usage.tokens) || usage.tokens < 0) return empty();
+      imageCount = event.images?.length ?? 0;
+      maxImagesPerMessage = imageCount;
+      for (const entry of projection.entries) {
+        if (aborted()) return empty();
+        for (const message of entry.messages) {
+          if (!("content" in message) || !Array.isArray(message.content)) continue;
+          const count = message.content.filter(part => part.type === "image").length;
+          imageCount += count;
+          maxImagesPerMessage = Math.max(maxImagesPerMessage, count);
+        }
+      }
+      capacityNeeded = usage.tokens + event.prompt.length + 8192 + imageCount * 8192;
+      capacitySource = "pi";
     }
-  }
-  // Include prompt, likely system/tool overhead, and an output reserve. Host still owns final context handling.
-  const capacityNeeded = usage.tokens + event.prompt.length + 8192 + imageCount * 8192;
+  } catch { return empty(); }
+  if (aborted()) return empty();
   const available = ctx.modelRegistry.getAvailable();
   const candidates: RuntimeCandidate[] = [];
   for (const option of options) {
@@ -36,7 +68,7 @@ export async function getRuntimeCandidates(
     if (!model || !model.input.includes("text")) continue;
     // We cannot verify a serialized-request byte cap before Pi constructs its payload.
     if (model.inputLimits?.maxRequestBytes !== undefined) continue;
-    if (model.contextWindow < capacityNeeded) continue;
+    if (!Number.isSafeInteger(model.contextWindow) || model.contextWindow <= 0 || model.contextWindow < capacityNeeded) continue;
     if (imageCount > 0 && !model.input.includes("image")) continue;
     if (model.inputLimits?.images?.maxPerMessage !== undefined &&
         maxImagesPerMessage > model.inputLimits.images.maxPerMessage) continue;
@@ -55,5 +87,5 @@ export async function getRuntimeCandidates(
       // A failing credential command never makes a model eligible.
     }
   }
-  return candidates;
+  return { candidates: aborted() ? [] : candidates, capacitySource };
 }

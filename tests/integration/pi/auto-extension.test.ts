@@ -7,6 +7,88 @@ import { createAssessmentExtension } from "../../../src/adapters/pi/assessment-e
 import { JevJudgmentProvider } from "../../../src/adapters/typesafe/jev-judgment-provider.js";
 import type { JudgmentBackend } from "../../../src/adapters/pi/resolve-judgment-provider.js";
 import type { RoutingAdapters } from "../../../src/adapters/pi/assessment-extension.js";
+import { inspectRuntimeCandidates } from "../../../src/adapters/pi/runtime-candidates.js";
+
+const measuredCandidates: RoutingAdapters["candidates"] = async (ctx, event, config, signal) => {
+  const model = { provider: option.provider, id: option.model, reasoning: false, input: ["text"], contextWindow: 40_000 };
+  Object.assign(ctx, { scopedModels: [], modelRegistry: { getAvailable: () => [model], getApiKeyAndHeaders: async () => ({ ok: true }) } });
+  return inspectRuntimeCandidates(config.options ?? [], ctx, event, signal, () => []);
+};
+
+test("post-compaction auto routing uses local estimates without expanding Jev context", async () => {
+  let sent = "";
+  const h = harness({ unknownUsage: true, candidates: measuredCandidates, provider: { async judge(request) { sent = JSON.stringify(request); return { answers } as never; } } });
+  h.sessionManager.appendMessage({ role: "user", content: "old".repeat(10000), timestamp: 0 });
+  const kept = h.sessionManager.appendMessage({ role: "user", content: "kept", timestamp: 0 });
+  h.sessionManager.appendCompaction("summary", kept, 100000);
+  h.sessionManager.appendMessage({ role: "toolResult", toolCallId: "1", toolName: "read", content: [{ type: "text", text: "PRIVATE_TOOL" }], isError: false, timestamp: 0 });
+  await h.command("model-router-auto", "on");
+  await h.run("explain this");
+  assert.equal(h.switches(), 1);
+  assert.equal(h.notices.filter(n => n.includes("capacity estimated locally")).length, 1);
+  assert.doesNotMatch(sent, /PRIVATE_SYSTEM|PRIVATE_TOOL|oldold/);
+  await h.run("next");
+  assert.equal(h.switches(), 2);
+});
+
+test("fresh capacity validation prevents a switch after context grows during judgment", async () => {
+  let release: (() => void) | undefined;
+  const h = harness({ unknownUsage: true, candidates: measuredCandidates, provider: { async judge() {
+    await new Promise<void>(done => { release = done; }); return { answers } as never;
+  } } });
+  await h.command("model-router-auto", "on");
+  const pending = h.run("explain");
+  while (!release) await new Promise(done => setTimeout(done, 1));
+  const projection = h.sessionManager.buildSessionProjection.bind(h.sessionManager);
+  let extra = "x".repeat(40000);
+  h.sessionManager.buildSessionProjection = () => {
+    const result = projection();
+    return { ...result, messages: [...result.messages, { role: "user", content: extra, timestamp: 0 }] };
+  };
+  release();
+  await pending;
+  assert.equal(h.switches(), 0);
+  assert.match(h.notices.at(-1) ?? "", /no longer runtime-eligible/);
+  extra = "small";
+  release = undefined;
+  const next = h.run("next");
+  while (!release) await new Promise(done => setTimeout(done, 1));
+  (release as () => void)();
+  await next;
+  assert.equal(h.switches(), 1);
+});
+
+test("one-shot fallback routes once and consumes permission on unavailable measurement", async () => {
+  let available = false;
+  const candidates: RoutingAdapters["candidates"] = (ctx, event, config, signal) => available
+    ? measuredCandidates(ctx, event, config, signal)
+    : Promise.resolve({ candidates: [], capacitySource: "unavailable" });
+  const h = harness({ unknownUsage: true, candidates });
+  await h.command("model-router-route", "once");
+  await h.run("first");
+  assert.equal(h.calls(), 0);
+  assert.match(h.notices.at(-1) ?? "", /safe local capacity estimate is unavailable/);
+  available = true;
+  await h.run("no permission");
+  assert.equal(h.calls(), 0);
+  await h.command("model-router-route", "once");
+  await h.run("route");
+  assert.equal(h.calls(), 1);
+  assert.equal(h.switches(), 1);
+  await h.run("no permission again");
+  assert.equal(h.calls(), 1);
+});
+
+test("estimated but empty eligibility reports no eligible models, not unknown capacity", async () => {
+  const h = harness({ unknownUsage: true, candidates: async () => ({ candidates: [], capacitySource: "estimated" }) });
+  await h.command("model-router-auto", "on");
+  await h.run("first");
+  assert.equal(h.calls(), 0);
+  assert.match(h.notices.at(-1) ?? "", /no runtime-eligible models/);
+  assert.doesNotMatch(h.notices.at(-1) ?? "", /unknown/);
+  await h.run("next");
+  assert.equal(h.notices.filter(n => n.includes("capacity estimated locally")).length, 2);
+});
 
 const option: ModelOption = {
   id: "candidate", provider: "test", model: "cheap", thinkingLevel: "off",
@@ -38,6 +120,7 @@ function harness(overrides: {
   readonly failThinking?: boolean;
   readonly routingTimeoutMs?: number;
   readonly unknownUsage?: boolean;
+  readonly candidates?: RoutingAdapters["candidates"];
   readonly initialLevel?: string;
   readonly deferredThinkingEvents?: boolean;
   readonly selectedLevel?: ModelOption["thinkingLevel"];
@@ -111,8 +194,8 @@ function harness(overrides: {
   } as unknown as ExtensionAPI;
   createAssessmentExtension(overrides.resolveBackend ?? (async () => ({ provider, recipient: "OpenRouter" })), {
     loadConfig: overrides.loadConfig ?? (async () => ({ ...config, options: [selectedOption] })),
-    candidates: async () => overrides.unknownUsage ? [] :
-      [{ option: selectedOption, model: { provider: option.provider, id: option.model } as never }],
+    candidates: overrides.candidates ?? (async () => overrides.unknownUsage ? [] :
+      [{ option: selectedOption, model: { provider: option.provider, id: option.model } as never }]),
   }, overrides.routingTimeoutMs === undefined ? {} : { routingTimeoutMs: overrides.routingTimeoutMs })(pi);
   return {
     notices, statuses, widgets, confirmations, ctx, sessionManager,
@@ -135,7 +218,7 @@ function harness(overrides: {
     level: () => currentLevel,
     setConfirm(value: (message: string) => Promise<boolean>) { confirm = value; },
     async command(name: string, arg: string) { const command = commands.get(name); assert.ok(command); await command(arg, ctx); },
-    async run(prompt: string) { await handlers.get("before_agent_start")?.({ type: "before_agent_start", prompt }, ctx); },
+    async run(prompt: string) { await handlers.get("before_agent_start")?.({ type: "before_agent_start", prompt, systemPrompt: "PRIVATE_SYSTEM", systemPromptOptions: { selectedTools: [] } }, ctx); },
     async event(name: string) { await handlers.get(name)?.({}, ctx); },
   };
 }

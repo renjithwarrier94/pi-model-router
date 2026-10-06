@@ -1,8 +1,8 @@
 import type { BeforeAgentStartEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ModelRouterConfig } from "../config/config-schema.js";
 import { loadModelRouterConfig } from "../config/load-config.js";
-import type { RuntimeCandidate } from "./runtime-candidates.js";
-import { getRuntimeCandidates } from "./runtime-candidates.js";
+import type { RuntimeCandidate, RuntimeCandidateResult } from "./runtime-candidates.js";
+import { inspectRuntimeCandidates } from "./runtime-candidates.js";
 import { calculateWeightedDifficulty, isSubstantialReview, selectModel, type ReviewScope } from "../../application/use-cases/select-model.js";
 import { getReviewScope } from "./review-scope.js";
 import { formatReviewPreflightFailure } from "./review-preflight-messages.js";
@@ -16,13 +16,13 @@ import { formatAssessmentStatus, ROUTER_AUTO_STATUS_KEY, ROUTER_STATUS_KEY, ROUT
 
 export interface RoutingAdapters {
   readonly loadConfig: (ctx: ExtensionContext) => Promise<ModelRouterConfig>;
-  readonly candidates: (ctx: ExtensionContext, event: BeforeAgentStartEvent, config: ModelRouterConfig, signal?: AbortSignal) => Promise<RuntimeCandidate[]>;
+  readonly candidates: (ctx: ExtensionContext, event: BeforeAgentStartEvent, config: ModelRouterConfig, signal?: AbortSignal) => Promise<RuntimeCandidateResult | RuntimeCandidate[]>;
   readonly reviewScope?: (cwd: string, base: string, signal: AbortSignal) => Promise<ReviewScope>;
 }
 
 const defaultRoutingAdapters: RoutingAdapters = {
   loadConfig: ctx => loadModelRouterConfig(ctx.cwd, ctx.isProjectTrusted()),
-  candidates: (ctx, event, config, signal) => getRuntimeCandidates(config.options ?? [], ctx, event, signal),
+  candidates: (ctx, event, config, signal) => inspectRuntimeCandidates(config.options ?? [], ctx, event, signal),
   reviewScope: getReviewScope,
 };
 
@@ -35,6 +35,15 @@ export function createAssessmentExtension(
   const routingTimeoutMs = options.routingTimeoutMs ?? 15_000;
   if (!Number.isSafeInteger(routingTimeoutMs) || routingTimeoutMs <= 0) throw new Error("Invalid routing deadline.");
   return (pi) => {
+    // Preserve list-only injected adapters; production always returns structured metadata.
+    const runtimeCandidates = async (ctx: ExtensionContext, event: BeforeAgentStartEvent, config: ModelRouterConfig, signal: AbortSignal): Promise<RuntimeCandidateResult> => {
+      const result = routing === defaultRoutingAdapters
+        ? await inspectRuntimeCandidates(config.options ?? [], ctx, event, signal, () => pi.getAllTools())
+        : await routing.candidates(ctx, event, config, signal);
+      return Array.isArray(result)
+        ? { candidates: result, capacitySource: result.length > 0 || ctx.getContextUsage?.()?.tokens != null ? "pi" : "unavailable" }
+        : result;
+    };
     let next: { intent: "assess" | "route"; recipient: JudgmentBackend["recipient"]; base?: string } | null = null;
     let automatic: { recipient: JudgmentBackend["recipient"]; sessionId: string | undefined } | null = null;
     let activeRun: AbortController | null = null;
@@ -303,6 +312,14 @@ export function createAssessmentExtension(
           return;
         }
         let candidates: RuntimeCandidate[] = [];
+        let estimateNotified = false;
+        const reportEstimate = (result: RuntimeCandidateResult) => {
+          if (result.capacitySource === "estimated" && !estimateNotified) {
+            estimateNotified = true;
+            notify(ctx, "Model-router capacity estimated locally because Pi context usage is unknown; routing uses conservative headroom.", "info");
+          }
+        };
+        const unavailableMessage = "Model-router route skipped: Pi context usage is unknown and a safe local capacity estimate is unavailable. Current model unchanged.";
         let config: ModelRouterConfig | undefined;
         if (intent === "route") {
           const routeConfig = await wait(() => routing.loadConfig(ctx));
@@ -313,12 +330,13 @@ export function createAssessmentExtension(
             notify(ctx, "Model-router route skipped: configure both policy and options. Current model unchanged.", "warning");
             return;
           }
-          candidates = await wait(() => routing.candidates(ctx, event, routeConfig, runController.signal));
+          const result = await wait(() => runtimeCandidates(ctx, event, routeConfig, runController.signal));
           if (!isCurrent()) return;
+          reportEstimate(result);
+          candidates = result.candidates;
           if (candidates.length === 0) {
-            const unknownUsage = ctx.getContextUsage()?.tokens == null;
-            notify(ctx, unknownUsage
-              ? "Model-router route skipped: Pi context usage is unknown (for example, after compaction). Current model unchanged."
+            notify(ctx, result.capacitySource === "unavailable"
+              ? unavailableMessage
               : "Model-router route skipped: no runtime-eligible models. Current model unchanged.", "warning");
             return;
           }
@@ -386,6 +404,16 @@ export function createAssessmentExtension(
           notify(ctx, "Review routing stopped: project trust changed. Current model unchanged.", "warning");
           return;
         }
+        const fresh = await wait(() => runtimeCandidates(ctx, event, config!, runController.signal));
+        if (!isCurrent()) return;
+        reportEstimate(fresh);
+        if (!fresh.candidates.some(candidate => candidate.model.provider === selected.model.provider &&
+          candidate.model.id === selected.model.id && candidate.option.thinkingLevel === selected.option.thinkingLevel)) {
+          notify(ctx, fresh.capacitySource === "unavailable" ? unavailableMessage
+            : "Model-router route skipped: selected model is no longer runtime-eligible. Current model unchanged.", "warning");
+          return;
+        }
+        if (pending.base && !ctx.isProjectTrusted()) return;
         switchStarted = true;
         const levelBeforeSwitch = pi.getThinkingLevel();
         seenDuringSwitch = [];
