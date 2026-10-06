@@ -2,7 +2,49 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SessionManager, type ExtensionContext, type BeforeAgentStartEvent } from "@earendil-works/pi-coding-agent";
 import type { ModelOption } from "../../../src/domain/model-option.js";
-import { getRuntimeCandidates } from "../../../src/adapters/pi/runtime-candidates.js";
+import { getRuntimeCandidates, inspectRuntimeCandidates } from "../../../src/adapters/pi/runtime-candidates.js";
+import { estimateContextCapacity } from "../../../src/adapters/pi/estimate-context-capacity.js";
+
+const fallbackEvent = { type: "before_agent_start", prompt: "x", systemPrompt: "y", systemPromptOptions: { selectedTools: [] } } as unknown as BeforeAgentStartEvent;
+
+test("unknown usage uses structured local estimates with exact capacity boundaries", async () => {
+  const h = host({ getContextUsage: () => ({ tokens: null }), model: { contextWindow: 17027 } });
+  assert.equal((await inspectRuntimeCandidates([base], h.context, fallbackEvent, undefined, () => [])).candidates.length, 1);
+  assert.equal((await inspectRuntimeCandidates([base], h.context, fallbackEvent, undefined, () => [])).capacitySource, "estimated");
+  h.model.contextWindow = 17026;
+  const small = await inspectRuntimeCandidates([base], h.context, fallbackEvent, undefined, () => []);
+  assert.deepEqual(small, { candidates: [], capacitySource: "estimated" });
+  assert.deepEqual(await inspectRuntimeCandidates([base], h.context, fallbackEvent), { candidates: [], capacitySource: "unavailable" });
+});
+
+test("fallback counts only active post-compaction projection and context replacements", async () => {
+  const h = host({ getContextUsage: () => undefined });
+  h.sessionManager.appendMessage({ role: "user", content: "x".repeat(2_000_001), timestamp: 0 });
+  const kept = h.sessionManager.appendMessage({ role: "user", content: "kept", timestamp: 0 });
+  h.sessionManager.appendCompaction("summary", kept, 3_000_000);
+  h.sessionManager.appendContextEdit(kept, { content: "replacement" });
+  const branchPoint = h.sessionManager.getLeafId()!;
+  h.sessionManager.appendMessage({ role: "user", content: "x".repeat(2_000_001), timestamp: 0 });
+  h.sessionManager.branchWithSummary(branchPoint, "branch");
+  const projected = h.sessionManager.buildSessionProjection().messages;
+  assert.equal(estimateContextCapacity(projected, fallbackEvent, []).status, "estimated");
+  assert.equal((await inspectRuntimeCandidates([base], h.context, fallbackEvent, undefined, () => [])).candidates.length, 1);
+  h.sessionManager.appendMessage({ role: "user", content: "x".repeat(2_000_001), timestamp: 0 });
+  assert.equal((await inspectRuntimeCandidates([base], h.context, fallbackEvent, undefined, () => [])).capacitySource, "unavailable");
+});
+
+test("invalid usage and missing or throwing fallback APIs fail before auth", async () => {
+  for (const tokens of [-1, NaN, Infinity, 1.5]) {
+    const h = host({ getContextUsage: () => ({ tokens }) });
+    assert.deepEqual(await inspectRuntimeCandidates([base], h.context, fallbackEvent), { candidates: [], capacitySource: "unavailable" });
+  }
+  const h = host({ getContextUsage: () => ({ tokens: null }), modelRegistry: {
+    getAvailable: () => { assert.fail("must not resolve auth"); },
+  } });
+  assert.equal((await inspectRuntimeCandidates([base], h.context, fallbackEvent, undefined, () => { throw Error("PRIVATE"); })).capacitySource, "unavailable");
+  const valid = host();
+  assert.equal((await inspectRuntimeCandidates([base], valid.context, event, undefined, () => { assert.fail("fallback only"); })).capacitySource, "pi");
+});
 
 const base: ModelOption = {
   id: "candidate", provider: "provider", model: "model", thinkingLevel: "high",

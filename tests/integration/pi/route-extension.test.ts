@@ -6,6 +6,8 @@ import type { ModelOption } from "../../../src/domain/model-option.js";
 import type { RoutingAdapters } from "../../../src/adapters/pi/assessment-extension.js";
 import { createAssessmentExtension } from "../../../src/adapters/pi/assessment-extension.js";
 import type { JudgmentBackend } from "../../../src/adapters/pi/resolve-judgment-provider.js";
+import { ReviewPreflightError, type ReviewPreflightErrorCode } from "../../../src/adapters/pi/review-scope.js";
+import { formatReviewPreflightFailure } from "../../../src/adapters/pi/review-preflight-messages.js";
 
 const policy = {
   weights: { reasoningDemand: 1, dependencyScope: 0, contextIntegrationDemand: 0 },
@@ -23,6 +25,7 @@ function runHarness(overrides: {
   switchModel?: (model: unknown) => Promise<boolean>;
   resolveBackend?: () => Promise<JudgmentBackend>;
   reviewScope?: RoutingAdapters["reviewScope"];
+  routingTimeoutMs?: number;
 } = {}) {
   const handlers = new Map<string, (...args: any[]) => unknown>();
   const commands = new Map<string, (arg: string, ctx: ExtensionContext) => Promise<void>>();
@@ -81,7 +84,8 @@ function runHarness(overrides: {
     sendMessage() { assert.fail("route must not inject context"); },
     appendEntry() { assert.fail("route must not persist context"); },
   } as unknown as ExtensionAPI;
-  createAssessmentExtension(overrides.resolveBackend ?? (async () => ({ provider, recipient: "TypeSafe" })), routing)(pi);
+  createAssessmentExtension(overrides.resolveBackend ?? (async () => ({ provider, recipient: "TypeSafe" })), routing,
+    overrides.routingTimeoutMs === undefined ? {} : { routingTimeoutMs: overrides.routingTimeoutMs })(pi);
   return {
     ctx, notifications, statuses, widgets, switched, levels, calls: () => calls,
     async command(name: string, arg: string) { await commands.get(name)?.(arg, ctx); },
@@ -114,7 +118,11 @@ test("explicit base is measured before Jev and applies only to eligible review m
   const weak = { ...option, id: "weak", provider: "provider", model: "weak", costPerTaskUsd: 0.01 };
   const reviewPolicy = { ...policy, substantialReview: { minChangedFiles: 8, minChangedLines: 250,
     minDirectories: 3, allowedOptionIds: ["cheapest"] } };
-  const provider: JudgmentProvider = { async judge() { return { answers: {
+  let providerCalls = 0;
+  const provider: JudgmentProvider = { async judge(request) {
+    providerCalls++;
+    assert.doesNotMatch(JSON.stringify(request), /lineCountsComplete|changedFiles|PRIVATE_GIT_PATH/);
+    return { answers: {
     workCategory: { type: "choice", choice: "review", confidence: 1, probabilities: {} },
     reasoningDemand: { type: "score", score: 0, confidence: 1, probabilities: [1, 0, 0] },
     dependencyScope: { type: "score", score: 0, confidence: 1, probabilities: [1, 0, 0] },
@@ -135,16 +143,90 @@ test("explicit base is measured before Jev and applies only to eligible review m
   await h.run("review this branch");
   assert.equal(scopeCalls, 1);
   assert.deepEqual(h.switched, [{ provider: option.provider, id: option.model }]);
+  assert.equal(h.notifications.some(n => n.includes("line counts are incomplete")), false);
+  const incomplete = setup(async () => ({ changedFiles: 1, changedLines: 0, directories: 1, lineCountsComplete: false }));
+  const callsBefore = providerCalls;
+  await incomplete.command("model-router-route", "once base=main");
+  await incomplete.run("review binary changes");
+  assert.equal(providerCalls, callsBefore + 1);
+  assert.deepEqual(incomplete.switched, [{ provider: option.provider, id: option.model }]);
+  assert.ok(incomplete.notifications.some(n => n.includes("line counts are incomplete")));
+  assert.ok(incomplete.notifications.some(n => n.includes("at least 0 changed lines")));
+  const missingTier = setup(async () => ({ changedFiles: 1, changedLines: 0, directories: 1, lineCountsComplete: false }), [weak]);
+  await missingTier.command("model-router-route", "once base=main");
+  await missingTier.run("review");
+  assert.equal(missingTier.switched.length, 0);
+  assert.ok(missingTier.notifications.some(n => n.includes("review-tier-unavailable")));
   const unavailable = setup(async () => ({ changedFiles: 10, changedLines: 1, directories: 1 }), [weak]);
   await unavailable.command("model-router-route", "once base=main");
   await unavailable.run("review");
   assert.equal(unavailable.switched.length, 0);
   assert.ok(unavailable.notifications.some(n => n.includes("review-tier-unavailable")));
+  const beforeFailure = providerCalls;
   const failed = setup(async () => { throw new Error("PRIVATE_GIT_PATH"); });
   await failed.command("model-router-route", "once base=main");
   await failed.run("PRIVATE_REVIEW_PROMPT");
   assert.equal(failed.switched.length, 0);
   assert.equal(failed.notifications.some(n => n.includes("PRIVATE_")), false);
+  assert.equal(providerCalls, beforeFailure);
+});
+
+test("preflight failures use fixed actionable diagnostics and consume once permission", async () => {
+  const cases: [ReviewPreflightErrorCode, string][] = [
+    ["invalid-base", "invalid base syntax"], ["base-not-found", "fetch/create"],
+    ["no-merge-base", "no shared ancestor"], ["repository-unavailable", "Git repository unavailable"],
+    ["not-repository-root", "repository root"], ["no-changes", "no changes found"],
+    ["file-limit", "200 changed files"], ["git-timeout", "4-second limit"],
+    ["git-output-limit", "output exceeded"], ["git-failed", "repository health"],
+    ["invalid-git-output", "unrecognized Git metadata"], ["filesystem-failed", "read safely"],
+  ];
+  for (const [code, expected] of cases) {
+    const error = new ReviewPreflightError(code);
+    error.message = "PRIVATE_PATH_REF_CONTENT";
+    const h = runHarness({
+      config: async () => ({ version: 1, options: [option], policy: { ...policy,
+        substantialReview: { minChangedFiles: 8, minChangedLines: 250, minDirectories: 3, allowedOptionIds: [option.id] } } }),
+      reviewScope: async () => { throw error; },
+    });
+    await h.command("model-router-route", "once base=main");
+    await h.run("PRIVATE_PROMPT");
+    assert.ok(h.notifications.at(-1)?.includes(expected), code);
+    assert.ok(h.notifications.at(-1)?.endsWith("No assessment sent; model unchanged."));
+    assert.doesNotMatch(JSON.stringify(h.notifications), /PRIVATE/);
+    assert.equal(h.calls(), 0); assert.equal(h.switched.length, 0);
+    await h.run("next prompt without consent");
+    assert.equal(h.calls(), 0);
+  }
+  assert.equal(formatReviewPreflightFailure(new Error("PRIVATE")),
+    "Review preflight could not measure the local diff. No assessment sent; model unchanged.");
+});
+
+test("off and deadline interrupt preflight without ordinary failure diagnostics or late switches", async () => {
+  for (const timeout of [false, true]) {
+    let start!: () => void;
+    const started = new Promise<void>(resolve => { start = resolve; });
+    let finish!: () => void;
+    let signal: AbortSignal | undefined;
+    const h = runHarness({ routingTimeoutMs: timeout ? 30 : 15_000,
+      config: async () => ({ version: 1, options: [option], policy: { ...policy,
+        substantialReview: { minChangedFiles: 8, minChangedLines: 250, minDirectories: 3, allowedOptionIds: [option.id] } } }),
+      reviewScope: async (_cwd, _base, abort) => {
+        signal = abort; start();
+        await new Promise<void>(resolve => { finish = resolve; });
+        return { changedFiles: 1, changedLines: 0, directories: 1, lineCountsComplete: false };
+      },
+    });
+    await h.command("model-router-route", "once base=main");
+    const pending = h.run("review");
+    await started;
+    if (!timeout) await h.command("model-router-route", "off");
+    await pending;
+    assert.equal(signal?.aborted, true);
+    finish(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.calls(), 0); assert.equal(h.switched.length, 0);
+    assert.equal(h.notifications.some(n => n.includes("No assessment sent;") || n.includes("line counts are incomplete")), false);
+    if (timeout) assert.ok(h.notifications.some(n => n.includes("timed out")));
+  }
 });
 
 test("absent policy, options, or eligible models skip without a TypeSafe request", async () => {

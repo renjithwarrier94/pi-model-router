@@ -4,8 +4,91 @@ import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earen
 import type { JudgmentProvider } from "../../../src/application/ports/judgment-provider.js";
 import type { ModelOption } from "../../../src/domain/model-option.js";
 import { createAssessmentExtension } from "../../../src/adapters/pi/assessment-extension.js";
+import { JevJudgmentProvider } from "../../../src/adapters/typesafe/jev-judgment-provider.js";
 import type { JudgmentBackend } from "../../../src/adapters/pi/resolve-judgment-provider.js";
 import type { RoutingAdapters } from "../../../src/adapters/pi/assessment-extension.js";
+import { inspectRuntimeCandidates } from "../../../src/adapters/pi/runtime-candidates.js";
+
+const measuredCandidates: RoutingAdapters["candidates"] = async (ctx, event, config, signal) => {
+  const model = { provider: option.provider, id: option.model, reasoning: false, input: ["text"], contextWindow: 40_000 };
+  Object.assign(ctx, { scopedModels: [], modelRegistry: { getAvailable: () => [model], getApiKeyAndHeaders: async () => ({ ok: true }) } });
+  return inspectRuntimeCandidates(config.options ?? [], ctx, event, signal, () => []);
+};
+
+test("post-compaction auto routing uses local estimates without expanding Jev context", async () => {
+  let sent = "";
+  const h = harness({ unknownUsage: true, candidates: measuredCandidates, provider: { async judge(request) { sent = JSON.stringify(request); return { answers } as never; } } });
+  h.sessionManager.appendMessage({ role: "user", content: "old".repeat(10000), timestamp: 0 });
+  const kept = h.sessionManager.appendMessage({ role: "user", content: "kept", timestamp: 0 });
+  h.sessionManager.appendCompaction("summary", kept, 100000);
+  h.sessionManager.appendMessage({ role: "toolResult", toolCallId: "1", toolName: "read", content: [{ type: "text", text: "PRIVATE_TOOL" }], isError: false, timestamp: 0 });
+  await h.command("model-router-auto", "on");
+  await h.run("explain this");
+  assert.equal(h.switches(), 1);
+  assert.equal(h.notices.filter(n => n.includes("capacity estimated locally")).length, 1);
+  assert.doesNotMatch(sent, /PRIVATE_SYSTEM|PRIVATE_TOOL|oldold/);
+  await h.run("next");
+  assert.equal(h.switches(), 2);
+});
+
+test("fresh capacity validation prevents a switch after context grows during judgment", async () => {
+  let release: (() => void) | undefined;
+  const h = harness({ unknownUsage: true, candidates: measuredCandidates, provider: { async judge() {
+    await new Promise<void>(done => { release = done; }); return { answers } as never;
+  } } });
+  await h.command("model-router-auto", "on");
+  const pending = h.run("explain");
+  while (!release) await new Promise(done => setTimeout(done, 1));
+  const projection = h.sessionManager.buildSessionProjection.bind(h.sessionManager);
+  let extra = "x".repeat(40000);
+  h.sessionManager.buildSessionProjection = () => {
+    const result = projection();
+    return { ...result, messages: [...result.messages, { role: "user", content: extra, timestamp: 0 }] };
+  };
+  release();
+  await pending;
+  assert.equal(h.switches(), 0);
+  assert.match(h.notices.at(-1) ?? "", /no longer runtime-eligible/);
+  extra = "small";
+  release = undefined;
+  const next = h.run("next");
+  while (!release) await new Promise(done => setTimeout(done, 1));
+  (release as () => void)();
+  await next;
+  assert.equal(h.switches(), 1);
+});
+
+test("one-shot fallback routes once and consumes permission on unavailable measurement", async () => {
+  let available = false;
+  const candidates: RoutingAdapters["candidates"] = (ctx, event, config, signal) => available
+    ? measuredCandidates(ctx, event, config, signal)
+    : Promise.resolve({ candidates: [], capacitySource: "unavailable" });
+  const h = harness({ unknownUsage: true, candidates });
+  await h.command("model-router-route", "once");
+  await h.run("first");
+  assert.equal(h.calls(), 0);
+  assert.match(h.notices.at(-1) ?? "", /safe local capacity estimate is unavailable/);
+  available = true;
+  await h.run("no permission");
+  assert.equal(h.calls(), 0);
+  await h.command("model-router-route", "once");
+  await h.run("route");
+  assert.equal(h.calls(), 1);
+  assert.equal(h.switches(), 1);
+  await h.run("no permission again");
+  assert.equal(h.calls(), 1);
+});
+
+test("estimated but empty eligibility reports no eligible models, not unknown capacity", async () => {
+  const h = harness({ unknownUsage: true, candidates: async () => ({ candidates: [], capacitySource: "estimated" }) });
+  await h.command("model-router-auto", "on");
+  await h.run("first");
+  assert.equal(h.calls(), 0);
+  assert.match(h.notices.at(-1) ?? "", /no runtime-eligible models/);
+  assert.doesNotMatch(h.notices.at(-1) ?? "", /unknown/);
+  await h.run("next");
+  assert.equal(h.notices.filter(n => n.includes("capacity estimated locally")).length, 2);
+});
 
 const option: ModelOption = {
   id: "candidate", provider: "test", model: "cheap", thinkingLevel: "off",
@@ -37,6 +120,7 @@ function harness(overrides: {
   readonly failThinking?: boolean;
   readonly routingTimeoutMs?: number;
   readonly unknownUsage?: boolean;
+  readonly candidates?: RoutingAdapters["candidates"];
   readonly initialLevel?: string;
   readonly deferredThinkingEvents?: boolean;
   readonly selectedLevel?: ModelOption["thinkingLevel"];
@@ -110,8 +194,8 @@ function harness(overrides: {
   } as unknown as ExtensionAPI;
   createAssessmentExtension(overrides.resolveBackend ?? (async () => ({ provider, recipient: "OpenRouter" })), {
     loadConfig: overrides.loadConfig ?? (async () => ({ ...config, options: [selectedOption] })),
-    candidates: async () => overrides.unknownUsage ? [] :
-      [{ option: selectedOption, model: { provider: option.provider, id: option.model } as never }],
+    candidates: overrides.candidates ?? (async () => overrides.unknownUsage ? [] :
+      [{ option: selectedOption, model: { provider: option.provider, id: option.model } as never }]),
   }, overrides.routingTimeoutMs === undefined ? {} : { routingTimeoutMs: overrides.routingTimeoutMs })(pi);
   return {
     notices, statuses, widgets, confirmations, ctx, sessionManager,
@@ -134,7 +218,7 @@ function harness(overrides: {
     level: () => currentLevel,
     setConfirm(value: (message: string) => Promise<boolean>) { confirm = value; },
     async command(name: string, arg: string) { const command = commands.get(name); assert.ok(command); await command(arg, ctx); },
-    async run(prompt: string) { await handlers.get("before_agent_start")?.({ type: "before_agent_start", prompt }, ctx); },
+    async run(prompt: string) { await handlers.get("before_agent_start")?.({ type: "before_agent_start", prompt, systemPrompt: "PRIVATE_SYSTEM", systemPromptOptions: { selectedTools: [] } }, ctx); },
     async event(name: string) { await handlers.get(name)?.({}, ctx); },
   };
 }
@@ -365,6 +449,108 @@ test("trust revoked during asynchronous credential lookup stops before context t
   await pending;
   assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, undefined);
   assert.doesNotMatch(JSON.stringify(h.notices), /PRIVATE_/);
+});
+
+test("Jev 5xx retries recover, exhaust once, and leave auto ready for the next prompt", async () => {
+  let calls = 0;
+  let activePrompt = 0;
+  let promptCalls = 0;
+  const jev = new JevJudgmentProvider({ apiKey: "test", fetch: async (_url, init) => {
+    calls++;
+    promptCalls++;
+    const questions = JSON.parse(String(init?.body)).questions as Record<string, { type: string; criteria?: unknown }>;
+    if (activePrompt === 1) return new Response("{}", { status: 503 });
+    if (activePrompt === 0 && promptCalls === 1) return new Response("{}", { status: 503 });
+    const answers = Object.fromEntries(Object.entries(questions).map(([id, question]) => {
+      if (question.type === "choice") {
+        const keys = Object.keys(question.criteria as Record<string, unknown>);
+        const probabilities = Object.fromEntries(keys.map((key, index) => [key, index === 0 ? 1 : 0]));
+        return [id, { type: "choice", choice: keys[0], probabilities, confidence: 1 }];
+      }
+      if (question.type === "score") {
+        const criteria = question.criteria as unknown[];
+        const probabilities = Object.fromEntries(criteria.map((_value, index) => [String(index), index === 0 ? 1 : 0]));
+        const legend = Object.fromEntries(criteria.map((value, index) => [String(index), value]));
+        return [id, { type: "score", score: 0, probabilities, legend, confidence: 1 }];
+      }
+      return [id, { type: "noul", noul: 0 }];
+    }));
+    return Response.json({ model: "jev-test", usage: { input_tokens: 1, output_tokens: 1 }, answers });
+  } });
+  const backend = { recipient: "OpenRouter" as const, provider: jev };
+  const h = harness({ resolveBackend: async () => backend });
+  await h.command("model-router-auto", "on");
+
+  activePrompt = 0;
+  promptCalls = 0;
+  await h.run("transient failure recovers");
+  assert.equal(calls, 2);
+  assert.equal(h.switches(), 1, JSON.stringify(h.notices));
+  assert.doesNotMatch(h.notices.join(" "), /route failed/);
+
+  activePrompt = 1;
+  promptCalls = 0;
+  await h.run("persistent failure exhausts retries");
+  assert.equal(calls, 5); // Three attempts for this prompt.
+  assert.match(h.notices.at(-1) ?? "", /route failed; current model unchanged/);
+  assert.match(h.notices.at(-1) ?? "", /Automatic routing remains enabled/);
+  assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, "Router auto: OpenRouter");
+
+  activePrompt = 2;
+  promptCalls = 0;
+  await h.run("next prompt still routes");
+  assert.equal(calls, 6);
+  assert.equal(h.switches(), 2);
+  assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, "Router auto: OpenRouter");
+});
+
+test("routing deadline and explicit auto-off cancel Jev retries before another attempt", async () => {
+  let calls = 0;
+  const provider = new JevJudgmentProvider({ apiKey: "test", fetch: async () => {
+    calls++;
+    return new Response("{}", { status: 503 });
+  } });
+  const backend = { recipient: "OpenRouter" as const, provider };
+  const timed = harness({ resolveBackend: async () => backend, routingTimeoutMs: 30 });
+  await timed.command("model-router-auto", "on");
+  await timed.run("deadline during Jev retry delay");
+  assert.equal(calls, 1);
+  assert.match(timed.notices.at(-1) ?? "", /timed out; current model unchanged/);
+  assert.equal([...timed.statuses].reverse().find(s => s.key === "model-router-auto")?.text, undefined);
+
+  calls = 0;
+  let requestStarted!: () => void;
+  const started = new Promise<void>(resolve => { requestStarted = resolve; });
+  const cancelProvider = new JevJudgmentProvider({ apiKey: "test", fetch: async () => {
+    calls++;
+    requestStarted();
+    return new Response("{}", { status: 503 });
+  } });
+  const cancelled = harness({ resolveBackend: async () => ({ recipient: "OpenRouter", provider: cancelProvider }) });
+  await cancelled.command("model-router-auto", "on");
+  const pending = cancelled.run("off during Jev retry delay");
+  await started;
+  await cancelled.command("model-router-auto", "off");
+  await pending;
+  assert.equal(calls, 1);
+  assert.equal(cancelled.switches(), 0);
+  assert.equal([...cancelled.statuses].reverse().find(s => s.key === "model-router-auto")?.text, undefined);
+});
+
+test("an unexpected pre-switch route failure keeps auto enabled and retries on the next prompt", async () => {
+  let calls = 0;
+  const h = harness({ provider: { async judge() {
+    if (++calls === 1) throw new Error("temporary provider failure");
+    return { answers } as never;
+  } } });
+  await h.command("model-router-auto", "on");
+  await h.run("synthetic first");
+  assert.match(h.notices.at(-1) ?? "", /Automatic routing remains enabled/);
+  assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, "Router auto: OpenRouter");
+  await h.run("synthetic second");
+  assert.equal(calls, 2);
+  assert.equal(h.switches(), 1);
+  assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, "Router auto: OpenRouter");
 });
 
 test("a failed Pi model switch revokes automatic consent instead of retrying every prompt", async () => {
