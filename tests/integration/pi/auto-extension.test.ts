@@ -4,6 +4,7 @@ import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earen
 import type { JudgmentProvider } from "../../../src/application/ports/judgment-provider.js";
 import type { ModelOption } from "../../../src/domain/model-option.js";
 import { createAssessmentExtension } from "../../../src/adapters/pi/assessment-extension.js";
+import { JevJudgmentProvider } from "../../../src/adapters/typesafe/jev-judgment-provider.js";
 import type { JudgmentBackend } from "../../../src/adapters/pi/resolve-judgment-provider.js";
 import type { RoutingAdapters } from "../../../src/adapters/pi/assessment-extension.js";
 
@@ -365,6 +366,92 @@ test("trust revoked during asynchronous credential lookup stops before context t
   await pending;
   assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, undefined);
   assert.doesNotMatch(JSON.stringify(h.notices), /PRIVATE_/);
+});
+
+test("Jev 5xx retries recover, exhaust once, and leave auto ready for the next prompt", async () => {
+  let calls = 0;
+  let activePrompt = 0;
+  let promptCalls = 0;
+  const jev = new JevJudgmentProvider({ apiKey: "test", fetch: async (_url, init) => {
+    calls++;
+    promptCalls++;
+    const questions = JSON.parse(String(init?.body)).questions as Record<string, { type: string; criteria?: unknown }>;
+    if (activePrompt === 1) return new Response("{}", { status: 503 });
+    if (activePrompt === 0 && promptCalls === 1) return new Response("{}", { status: 503 });
+    const answers = Object.fromEntries(Object.entries(questions).map(([id, question]) => {
+      if (question.type === "choice") {
+        const keys = Object.keys(question.criteria as Record<string, unknown>);
+        const probabilities = Object.fromEntries(keys.map((key, index) => [key, index === 0 ? 1 : 0]));
+        return [id, { type: "choice", choice: keys[0], probabilities, confidence: 1 }];
+      }
+      if (question.type === "score") {
+        const criteria = question.criteria as unknown[];
+        const probabilities = Object.fromEntries(criteria.map((_value, index) => [String(index), index === 0 ? 1 : 0]));
+        const legend = Object.fromEntries(criteria.map((value, index) => [String(index), value]));
+        return [id, { type: "score", score: 0, probabilities, legend, confidence: 1 }];
+      }
+      return [id, { type: "noul", noul: 0 }];
+    }));
+    return Response.json({ model: "jev-test", usage: { input_tokens: 1, output_tokens: 1 }, answers });
+  } });
+  const backend = { recipient: "OpenRouter" as const, provider: jev };
+  const h = harness({ resolveBackend: async () => backend });
+  await h.command("model-router-auto", "on");
+
+  activePrompt = 0;
+  promptCalls = 0;
+  await h.run("transient failure recovers");
+  assert.equal(calls, 2);
+  assert.equal(h.switches(), 1, JSON.stringify(h.notices));
+  assert.doesNotMatch(h.notices.join(" "), /route failed/);
+
+  activePrompt = 1;
+  promptCalls = 0;
+  await h.run("persistent failure exhausts retries");
+  assert.equal(calls, 5); // Three attempts for this prompt.
+  assert.match(h.notices.at(-1) ?? "", /route failed; current model unchanged/);
+  assert.match(h.notices.at(-1) ?? "", /Automatic routing remains enabled/);
+  assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, "Router auto: OpenRouter");
+
+  activePrompt = 2;
+  promptCalls = 0;
+  await h.run("next prompt still routes");
+  assert.equal(calls, 6);
+  assert.equal(h.switches(), 2);
+  assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, "Router auto: OpenRouter");
+});
+
+test("routing deadline and explicit auto-off cancel Jev retries before another attempt", async () => {
+  let calls = 0;
+  const provider = new JevJudgmentProvider({ apiKey: "test", fetch: async () => {
+    calls++;
+    return new Response("{}", { status: 503 });
+  } });
+  const backend = { recipient: "OpenRouter" as const, provider };
+  const timed = harness({ resolveBackend: async () => backend, routingTimeoutMs: 30 });
+  await timed.command("model-router-auto", "on");
+  await timed.run("deadline during Jev retry delay");
+  assert.equal(calls, 1);
+  assert.match(timed.notices.at(-1) ?? "", /timed out; current model unchanged/);
+  assert.equal([...timed.statuses].reverse().find(s => s.key === "model-router-auto")?.text, undefined);
+
+  calls = 0;
+  let requestStarted!: () => void;
+  const started = new Promise<void>(resolve => { requestStarted = resolve; });
+  const cancelProvider = new JevJudgmentProvider({ apiKey: "test", fetch: async () => {
+    calls++;
+    requestStarted();
+    return new Response("{}", { status: 503 });
+  } });
+  const cancelled = harness({ resolveBackend: async () => ({ recipient: "OpenRouter", provider: cancelProvider }) });
+  await cancelled.command("model-router-auto", "on");
+  const pending = cancelled.run("off during Jev retry delay");
+  await started;
+  await cancelled.command("model-router-auto", "off");
+  await pending;
+  assert.equal(calls, 1);
+  assert.equal(cancelled.switches(), 0);
+  assert.equal([...cancelled.statuses].reverse().find(s => s.key === "model-router-auto")?.text, undefined);
 });
 
 test("an unexpected pre-switch route failure keeps auto enabled and retries on the next prompt", async () => {

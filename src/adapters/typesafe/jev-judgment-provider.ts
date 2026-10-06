@@ -46,8 +46,19 @@ export class JevJudgmentProvider implements JudgmentProvider {
         // Explicitly override TYPESAFE_LOG_LEVEL to prevent raw context logging.
         logLevel: "off",
         timeout: config.timeout ?? 10_000,
-        // Avoid silently multiplying latency and billable requests by default.
-        retry: { ...config.retry, maxRetries: config.retry?.maxRetries ?? 0 },
+        // Retry only transient HTTP server errors: two additional attempts, fixed 100 ms delay.
+        // Do not retry network/timeout failures, rate limits, or honor server Retry-After by default.
+        retry: {
+          maxRetries: 2,
+          backoffInitialMs: 100,
+          backoffMaxMs: 100,
+          backoffJitter: 0,
+          httpStatuses: new Set(Array.from({ length: 100 }, (_, index) => 500 + index)),
+          respectRetryAfter: false,
+          apiConnectionError: false,
+          apiTimeoutError: false,
+          ...config.retry,
+        },
       });
     } catch {
       throw new JudgmentProviderError("invalid-request", "Invalid TypeSafe client configuration; check credentials and options.");

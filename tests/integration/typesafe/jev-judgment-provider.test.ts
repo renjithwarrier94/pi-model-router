@@ -29,7 +29,7 @@ const errorCode = (code: string) => (error: unknown) => {
 };
 
 function provider(body: unknown = response(), status = 200) {
-  return new JevJudgmentProvider({ apiKey: "test", fetch: async () => Response.json(body, { status }) });
+  return new JevJudgmentProvider({ apiKey: "test", retry: { maxRetries: 0 }, fetch: async () => Response.json(body, { status }) });
 }
 
 test("maps all question types through the real SDK and normalizes answers", async () => {
@@ -148,14 +148,102 @@ test("in-flight cancellation", async () => {
   await assert.rejects(promise, errorCode("cancelled"));
 });
 
-test("SDK deadline becomes timeout", async () => {
-  const adapter = new JevJudgmentProvider({ apiKey: "test", timeout: 10, fetch: pendingFetch });
+test("SDK deadline becomes timeout without retrying per-attempt timeouts", async () => {
+  let calls = 0;
+  const adapter = new JevJudgmentProvider({ apiKey: "test", timeout: 10, fetch: async (url, init) => {
+    calls++;
+    return pendingFetch(url, init);
+  } });
   await assert.rejects(adapter.judge(request), errorCode("timeout"));
+  assert.equal(calls, 1);
 });
 
 test("network failures are sanitized and not retried by default", async () => {
   let calls = 0;
   const adapter = new JevJudgmentProvider({ apiKey: "test", fetch: async () => { calls++; throw new Error("SECRET"); } });
+  await assert.rejects(adapter.judge(request), errorCode("unavailable"));
+  assert.equal(calls, 1);
+});
+
+test("default retries transient HTTP 5xx twice at fixed 100 ms intervals, then succeeds", async () => {
+  let calls = 0;
+  const starts: number[] = [];
+  const adapter = new JevJudgmentProvider({ apiKey: "test", fetch: async () => {
+    starts.push(performance.now());
+    if (++calls < 3) return new Response("{}", { status: 503, headers: { "retry-after": "5" } });
+    return Response.json(response());
+  } });
+  await adapter.judge(request);
+  assert.equal(calls, 3);
+  assert.ok(starts[1]! - starts[0]! >= 90, `first delay was ${starts[1]! - starts[0]!}ms`);
+  assert.ok(starts[2]! - starts[1]! >= 90, `second delay was ${starts[2]! - starts[1]!}ms`);
+  assert.ok(starts[2]! - starts[0]! < 1_000, "Retry-After must not override the fixed delay");
+});
+
+test("default 5xx retry exhaustion makes three total attempts and preserves sanitized normalization", async () => {
+  let calls = 0;
+  const adapter = new JevJudgmentProvider({ apiKey: "test", fetch: async () => {
+    calls++;
+    return new Response(JSON.stringify({ error: "SECRET" }), { status: 503 });
+  } });
+  await assert.rejects(adapter.judge(request), errorCode("unavailable"));
+  assert.equal(calls, 3);
+});
+
+test("default retry eligibility covers HTTP 500 through 599, including 504", async () => {
+  for (const [status, code] of [[500, "unavailable"], [502, "unavailable"], [504, "timeout"], [599, "unavailable"]] as const) {
+    let calls = 0;
+    const adapter = new JevJudgmentProvider({ apiKey: "test", fetch: async () => {
+      calls++;
+      return new Response("{}", { status });
+    } });
+    await assert.rejects(adapter.judge(request), errorCode(code));
+    assert.equal(calls, 3, `HTTP ${status} should get three total attempts`);
+  }
+});
+
+test("default policy does not retry 429 or caller/network timeouts", async () => {
+  let calls = 0;
+  const rateLimited = new JevJudgmentProvider({ apiKey: "test", fetch: async () => {
+    calls++;
+    return new Response("{}", { status: 429 });
+  } });
+  await assert.rejects(rateLimited.judge(request), errorCode("rate-limited"));
+  assert.equal(calls, 1);
+
+  calls = 0;
+  const controller = new AbortController();
+  const cancelled = new JevJudgmentProvider({ apiKey: "test", fetch: async (_url, init) => {
+    calls++;
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new Error("SECRET")), { once: true });
+    });
+  } });
+  const promise = cancelled.judge(request, { signal: controller.signal });
+  setTimeout(() => controller.abort(), 10);
+  await assert.rejects(promise, errorCode("cancelled"));
+  assert.equal(calls, 1);
+});
+
+test("cancellation during the fixed retry delay prevents the next HTTP attempt", async () => {
+  let calls = 0;
+  const adapter = new JevJudgmentProvider({ apiKey: "test", fetch: async () => {
+    calls++;
+    return new Response("{}", { status: 503 });
+  } });
+  const controller = new AbortController();
+  const promise = adapter.judge(request, { signal: controller.signal });
+  setTimeout(() => controller.abort(), 20);
+  await assert.rejects(promise, errorCode("cancelled"));
+  assert.equal(calls, 1);
+});
+
+test("maxRetries: 0 disables the default server-error retries", async () => {
+  let calls = 0;
+  const adapter = new JevJudgmentProvider({ apiKey: "test", retry: { maxRetries: 0 }, fetch: async () => {
+    calls++;
+    return new Response("{}", { status: 503 });
+  } });
   await assert.rejects(adapter.judge(request), errorCode("unavailable"));
   assert.equal(calls, 1);
 });

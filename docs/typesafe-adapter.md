@@ -10,7 +10,6 @@ const provider = new JevJudgmentProvider({
   apiKey: process.env.TYPESAFE_API_KEY!,
   defaultModel: "jev-latest",
   timeout: 5_000,
-  retry: { maxRetries: 0 },
 });
 
 const result = await provider.judge({
@@ -29,7 +28,7 @@ The Pi integration (`src/adapters/pi/resolve-judgment-provider.ts`) chooses the 
 
 The constructor accepts `apiKey`, `baseURL`, `defaultModel`, `timeout`, `retry`, and `fetch`. Omitted credentials, base URL, and model use SDK environment/default resolution. Custom `fetch` supports controlled transport tests.
 
-Defaults are a 10-second **per-attempt** timeout and zero retries. Explicit retry configuration uses the SDK's bounded retry policy. There is no total retry deadline; callers may supply `judge(request, { signal })` for overall cancellation. A caller-provided timeout signal is classified as `cancelled`; the SDK's attempt timeout is classified as `timeout`.
+Defaults are a 10-second **per-attempt** timeout and two retries (three total attempts) for HTTP 5xx responses, with a fixed 100 ms delay. Other statuses, connection errors, and per-attempt timeouts are not retried by default. The SDK's `Retry-After` response header is ignored to keep the delay fixed. Pass `retry: { maxRetries: 0 }` to disable retries; partial retry configuration overrides these defaults. In Pi, the existing 15-second per-prompt deadline bounds all attempts and delays, so it may abort the request before all retries run. Outside Pi, callers may supply `judge(request, { signal })` for overall cancellation. Each retry resends the same prompt context and may incur additional provider charges. A caller-provided abort signal is classified as `cancelled`; an SDK per-attempt timeout is classified as `timeout`.
 
 SDK logging is explicitly disabled, including when `TYPESAFE_LOG_LEVEL` is set. Credentials, raw requests, SDK response bodies, and exception causes are not copied into application errors. Invalid constructor configuration produces a sanitized `invalid-request` error.
 
