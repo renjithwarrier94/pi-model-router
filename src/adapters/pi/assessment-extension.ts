@@ -5,6 +5,7 @@ import type { RuntimeCandidate } from "./runtime-candidates.js";
 import { getRuntimeCandidates } from "./runtime-candidates.js";
 import { calculateWeightedDifficulty, isSubstantialReview, selectModel, type ReviewScope } from "../../application/use-cases/select-model.js";
 import { getReviewScope } from "./review-scope.js";
+import { formatReviewPreflightFailure } from "./review-preflight-messages.js";
 import type { TaskAssessment } from "../../application/models/task-assessment.js";
 import { prepareContext } from "../../application/use-cases/prepare-context.js";
 import { assessTask } from "../../application/use-cases/assess-task.js";
@@ -330,9 +331,10 @@ export function createAssessmentExtension(
           }
           try {
             reviewScope = await wait(() => routing.reviewScope!(ctx.cwd, pending.base!, runController.signal));
-          } catch {
+          } catch (error) {
             if (runController.signal.aborted) throw new Error("Routing interrupted.");
-            notify(ctx, "Review preflight could not measure the local diff; no assessment sent and model unchanged.", "warning");
+            if (!isCurrent()) return;
+            notify(ctx, formatReviewPreflightFailure(error), "warning");
             return;
           }
           if (!isCurrent()) return;
@@ -340,6 +342,9 @@ export function createAssessmentExtension(
             notify(ctx, "Review preflight stopped: project trust changed. Current model unchanged.", "warning");
             return;
           }
+        }
+        if (reviewScope?.lineCountsComplete === false) {
+          notify(ctx, "Review line counts are incomplete. If this task is assessed as a review, routing will use the configured substantial-review tier.", "info");
         }
         const snapshot = mapContext(event, ctx.sessionManager);
         const prepared = prepareContext(snapshot);
@@ -368,7 +373,7 @@ export function createAssessmentExtension(
         if (intent === "assess") return;
         if (reviewScope && assessment.workCategory.choice === "review" &&
             config!.policy!.substantialReview && isSubstantialReview(reviewScope, config!.policy!.substantialReview)) {
-          notify(ctx, `Substantial review scope (${reviewScope.changedFiles} files, ${reviewScope.changedLines} changed lines, ${reviewScope.directories} directories): configured review tier applied.`, "info");
+          notify(ctx, `Substantial review scope (${reviewScope.changedFiles} files, ${reviewScope.lineCountsComplete === false ? "at least " : ""}${reviewScope.changedLines} changed lines, ${reviewScope.directories} directories): configured review tier applied.`, "info");
         }
         const decision = selectModel(assessment, candidates.map(c => c.option), config!.policy!, reviewScope);
         if (decision.status === "unchanged") {

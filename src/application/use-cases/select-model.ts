@@ -4,8 +4,11 @@ import type { TaskAssessment } from "../models/task-assessment.js";
 
 export interface ReviewScope {
   readonly changedFiles: number;
+  /** Lower bound when lineCountsComplete is false. */
   readonly changedLines: number;
   readonly directories: number;
+  /** Omitted means complete for existing callers. */
+  readonly lineCountsComplete?: boolean;
 }
 
 export type SelectionDecision =
@@ -63,7 +66,7 @@ export function selectModel(
 }
 
 export function isSubstantialReview(scope: ReviewScope, policy: SubstantialReviewPolicy): boolean {
-  return scope.changedFiles >= policy.minChangedFiles ||
+  return scope.lineCountsComplete === false || scope.changedFiles >= policy.minChangedFiles ||
     scope.changedLines >= policy.minChangedLines ||
     scope.directories >= policy.minDirectories;
 }

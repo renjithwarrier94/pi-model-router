@@ -89,7 +89,7 @@ test("explicit substantial review scope restricts candidates, never category or 
     substantialReview: { minChangedFiles: 8, minChangedLines: 250, minDirectories: 3, allowedOptionIds: ["sol-medium", "sol-high"] } };
   const models = [option("luna-medium", 44.5, 0.052, ["review"]), option("sol-medium", 56.6, 0.38, ["general"]),
     option("sol-high", 65.3, 0.64, ["review"])];
-  const choose = (scope?: { changedFiles: number; changedLines: number; directories: number }, candidates = models) =>
+  const choose = (scope?: { changedFiles: number; changedLines: number; directories: number; lineCountsComplete?: boolean }, candidates = models) =>
     selectModel(review, candidates, scoped, scope);
   assert.equal(choose().status === "selected" && (choose() as { option: ModelOption }).option.id, "luna-medium");
   assert.equal((choose({ changedFiles: 7, changedLines: 249, directories: 2 }) as { option: ModelOption }).option.id, "luna-medium");
@@ -98,7 +98,18 @@ test("explicit substantial review scope restricts candidates, never category or 
     assert.equal((choose(scope) as { option: ModelOption }).option.id, "sol-medium");
     assert.deepEqual(choose(scope, [models[0]!]), { status: "unchanged", reason: "review-tier-unavailable" });
   }
+  const incomplete = { changedFiles: 1, changedLines: 0, directories: 1, lineCountsComplete: false };
+  assert.equal((choose(incomplete) as { option: ModelOption }).option.id, "sol-medium");
+  assert.deepEqual(choose(incomplete, [models[0]!]), { status: "unchanged", reason: "review-tier-unavailable" });
+  assert.equal((choose({ ...incomplete, lineCountsComplete: true }) as { option: ModelOption }).option.id, "luna-medium");
+  const fallback = selectModel(review, models, { ...scoped,
+    difficultyToDeepSweScore: [{ difficulty: 0, score: 100 }, { difficulty: 1, score: 100 }] }, incomplete);
+  assert.equal(fallback.status, "threshold-unmet");
+  assert.equal((fallback as { option: ModelOption }).option.id, "sol-high");
+  assert.deepEqual(selectModel({ ...review, missingCriticalEvidence: { type: "noul", probability: 0.8 } }, models, scoped,
+    incomplete), { status: "unchanged", reason: "critical-evidence" });
   const other = assessment({ workCategory: { ...review.workCategory, choice: "implement" } });
+  assert.deepEqual(selectModel(other, models, scoped, incomplete), selectModel(other, models, scoped));
   assert.equal((selectModel(other, models, scoped, { changedFiles: 99, changedLines: 999, directories: 8 }) as { option: ModelOption }).option.id, "sol-medium");
   assert.deepEqual(selectModel({ ...review, missingCriticalEvidence: { type: "noul", probability: 0.8 } }, models, scoped,
     { changedFiles: 99, changedLines: 999, directories: 8 }), { status: "unchanged", reason: "critical-evidence" });
