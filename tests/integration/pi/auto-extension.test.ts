@@ -367,6 +367,22 @@ test("trust revoked during asynchronous credential lookup stops before context t
   assert.doesNotMatch(JSON.stringify(h.notices), /PRIVATE_/);
 });
 
+test("an unexpected pre-switch route failure keeps auto enabled and retries on the next prompt", async () => {
+  let calls = 0;
+  const h = harness({ provider: { async judge() {
+    if (++calls === 1) throw new Error("temporary provider failure");
+    return { answers } as never;
+  } } });
+  await h.command("model-router-auto", "on");
+  await h.run("synthetic first");
+  assert.match(h.notices.at(-1) ?? "", /Automatic routing remains enabled/);
+  assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, "Router auto: OpenRouter");
+  await h.run("synthetic second");
+  assert.equal(calls, 2);
+  assert.equal(h.switches(), 1);
+  assert.equal([...h.statuses].reverse().find(s => s.key === "model-router-auto")?.text, "Router auto: OpenRouter");
+});
+
 test("a failed Pi model switch revokes automatic consent instead of retrying every prompt", async () => {
   let calls = 0;
   const h = harness({

@@ -258,6 +258,7 @@ export function createAssessmentExtension(
       turnSignal?.addEventListener("abort", abortWithTurn, { once: true });
       if (turnSignal?.aborted) runController.abort();
       let deadlineExpired = false;
+      let backendResolved = false;
       let switchStarted = false;
       let switchMarker: { provider: string; id: string } | null = null;
       const timer = setTimeout(() => { deadlineExpired = true; runController.abort(); }, routingTimeoutMs);
@@ -293,6 +294,7 @@ export function createAssessmentExtension(
         setStatus(ctx);
         // Re-resolve before reading context; credentials may have changed since consent.
         const backend = await wait(() => resolveBackend(ctx));
+        backendResolved = true;
         if (!isCurrent()) return;
         if (backend.recipient !== pending.recipient) {
           if (automatic) reset(ctx);
@@ -422,12 +424,12 @@ export function createAssessmentExtension(
             : "Model-router timed out; current model unchanged. Automatic consent, if enabled, was revoked.", "warning");
         } else if ((switchStarted && generation === run && !runController.signal.aborted &&
                     ctx.sessionManager.getSessionId() === sessionId) || isCurrent()) {
-          if (automatic) reset(ctx); // Re-consent before retrying after an unexpected automatic failure.
+          if (automatic && (!backendResolved || switchStarted)) reset(ctx); // Credential loss or a partial switch requires fresh consent.
           notify(ctx, switchStarted
-            ? "Model-router route failed during model switching; inspect Pi's active model and thinking level."
+            ? "Model-router route failed during model switching; inspect Pi's active model and thinking level. Automatic consent was revoked."
             : intent === "route"
-              ? "Model-router route failed; current model unchanged."
-              : "Model-router assessment failed; current model unchanged.", "warning");
+              ? "Model-router route failed; current model unchanged. Automatic routing remains enabled and will retry on the next prompt."
+              : "Model-router assessment failed; current model unchanged. Automatic routing remains enabled and will retry on the next prompt.", "warning");
         }
       } finally {
         clearTimeout(timer);
